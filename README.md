@@ -20,24 +20,26 @@ See [gateway behavior and limitations](docs/GATEWAY.md) for accounting, compatib
 
 ## Start with Docker
 
-From this source directory:
+The public image supports Linux AMD64 and ARM64. From this source directory:
 
 ```sh
-docker compose up --build -d
+GATE_IMAGE=ghcr.io/younesh11/gate-llm:0.1.0 docker compose up -d --no-build --pull always
 ```
+
+To build the image yourself instead, run `docker compose up --build -d`.
 
 Open **http://127.0.0.1:4310** and create your owner account. Data persists in a named volume. If port 4310 is occupied, prefix the command with `GATE_PORT=4313`. The container runs as a non-root user and publishes to host loopback by default.
 
-## Install a local package
+## Install a release package
 
-The release artifacts are prepared locally; public npm/PyPI/container publication is a separate release step.
+The [v0.1.0 release](https://github.com/younesh11/gate-llm/releases/tag/v0.1.0) has public npm and Python downloads with checksums. You do not need a registry account to install them. Publication under the short `gate-llm` name on npm/PyPI is still pending.
 
 ```sh
 # npm — Node.js 22.13+ required (24 LTS recommended)
-npm install -g ./artifacts/npm/gate-llm-0.1.0.tgz
+npm install -g https://github.com/younesh11/gate-llm/releases/download/v0.1.0/gate-llm-0.1.0.tgz
 
 # Or pip, inside a virtual environment — Python 3.10+ AND Node.js required
-python -m pip install ./artifacts/python/gate_llm-0.1.0-py3-none-any.whl
+python -m pip install https://github.com/younesh11/gate-llm/releases/download/v0.1.0/gate_llm-0.1.0-py3-none-any.whl
 
 # Either installation provides the same command:
 gate-llm serve --port 4310
