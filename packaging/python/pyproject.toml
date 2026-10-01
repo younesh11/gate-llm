@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gate-llm"
+dynamic = ["version"]
+description = "Python launcher for the GATE self-hosted LLM gateway (requires Node.js)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["llm", "gateway", "proxy", "ai"]
+classifiers = ["Development Status :: 3 - Alpha", "Environment :: Console", "Programming Language :: Python :: 3", "Operating System :: OS Independent", "Topic :: Internet :: Proxy Servers"]
+
+[project.urls]
+Homepage = "https://github.com/younesh11/gate-llm"
+Repository = "https://github.com/younesh11/gate-llm"
+Issues = "https://github.com/younesh11/gate-llm/issues"
+
+[project.scripts]
+gate-llm = "relay_gateway.cli:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "relay_gateway._version.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+relay_gateway = ["vendor/*.tgz", "vendor/manifest.json"]

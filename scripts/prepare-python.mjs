@@ -1,0 +1,13 @@
+import { readFileSync, writeFileSync, copyFileSync, mkdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+const manifest = JSON.parse(readFileSync('artifacts/npm/manifest.json', 'utf8'));
+if (manifest.name !== pkg.name || manifest.version !== pkg.version) throw new Error('Run npm run pack:release for the current package first.');
+execFileSync(process.execPath, ['scripts/sync-version.mjs'], { stdio: 'inherit' });
+const vendor = 'packaging/python/src/relay_gateway/vendor'; mkdirSync(vendor, { recursive: true });
+copyFileSync(`artifacts/npm/${manifest.filename}`, `${vendor}/runtime.tgz`);
+if (createHash('sha256').update(readFileSync(`${vendor}/runtime.tgz`)).digest('hex') !== manifest.sha256) throw new Error('Runtime checksum mismatch.');
+writeFileSync(`${vendor}/manifest.json`, JSON.stringify(manifest, null, 2) + '\n');
+copyFileSync('LICENSE', 'packaging/python/LICENSE');
+console.log('Python runtime prepared. Build with: python -m build packaging/python --outdir artifacts/python');

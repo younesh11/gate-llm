@@ -1,0 +1,29 @@
+name: gate-llm
+services:
+  relay:
+    image: ${GATE_IMAGE:-gate-llm:0.1.0}
+    build:
+      context: .
+      args:
+        VERSION: ${GATE_VERSION:-0.1.0}
+        REVISION: ${GATE_REVISION:-local}
+    ports:
+      - "127.0.0.1:${GATE_PORT:-4310}:4310"
+    environment:
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      ALLOW_PRIVATE_UPSTREAMS: ${ALLOW_PRIVATE_UPSTREAMS:-false}
+      # Required through container NAT; the host port remains loopback-only.
+      ALLOW_REMOTE_SETUP: "true"
+    volumes:
+      - relay-data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 150s
+volumes:
+  relay-data:

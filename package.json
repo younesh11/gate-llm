@@ -1,0 +1,80 @@
+{
+  "name": "gate-llm",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "dev": "tsx watch server/index.ts",
+    "dev:ui": "vite --host 127.0.0.1",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && tsc -p tsconfig.build.json && vite build",
+    "start": "node build/cli.js",
+    "test": "tsx --test tests/*.test.ts",
+    "demo": "tsx scripts/demo.ts",
+    "prepack": "npm run build",
+    "version": "node scripts/sync-version.mjs",
+    "pack:release": "node scripts/pack-release.mjs",
+    "check:package": "node scripts/check-package.mjs",
+    "test:package": "node scripts/smoke-package.mjs",
+    "package:python": "node scripts/prepare-python.mjs",
+    "check:version": "node scripts/sync-version.mjs --check",
+    "test:python": "python3 scripts/test-python.py"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/static": "^10.1.5",
+    "fastify": "^5.12.5",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.3",
+    "vite": "^6.1.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tsx": "^4.20.0"
+  },
+  "description": "A self-hosted LLM gateway with virtual keys, quotas, guardrails, routing, and a team dashboard.",
+  "license": "MIT",
+  "bin": {
+    "gate-llm": "build/cli.js"
+  },
+  "files": [
+    "build/",
+    "dist/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "docs/"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "llm",
+    "gateway",
+    "proxy",
+    "ai",
+    "self-hosted"
+  ],
+  "bundleDependencies": [
+    "@fastify/cookie",
+    "@fastify/static",
+    "fastify",
+    "zod"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/younesh11/gate-llm.git"
+  },
+  "homepage": "https://github.com/younesh11/gate-llm#readme",
+  "bugs": {
+    "url": "https://github.com/younesh11/gate-llm/issues"
+  }
+}

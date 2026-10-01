@@ -1,0 +1,50 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ['22.13.0', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: npm ci
+      - run: npm test
+      - run: npm run test:python
+      - run: npm run check:version
+      - run: npm run pack:release
+      - run: npm run check:package
+      - run: npm run test:package
+      - run: npm run package:python
+      - run: python -m pip install build twine
+      - run: python -m build packaging/python --outdir artifacts/python
+      - run: python -m twine check artifacts/python/*
+      - run: python -m pip install --no-index artifacts/python/*.whl
+      - run: gate-llm --version
+      - run: python scripts/smoke-python.py
+      - uses: actions/upload-artifact@v4
+        if: matrix.node == '24'
+        with:
+          name: gate-packages
+          path: artifacts/
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose build
+      - run: docker compose up -d --wait
+      - run: curl --fail http://127.0.0.1:4310/health
+      - if: always()
+        run: docker compose down -v

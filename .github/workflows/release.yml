@@ -1,0 +1,100 @@
+name: Release
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag (vX.Y.Z)
+        required: true
+        type: string
+      publish_npm:
+        description: Publish npm package
+        type: boolean
+        default: false
+      publish_pypi:
+        description: Publish PyPI distributions
+        type: boolean
+        default: false
+      publish_container:
+        description: Publish container to this repository's GHCR namespace
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify version and tag
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          node --input-type=module -e 'import fs from "node:fs"; import {execFileSync} from "node:child_process"; const v=JSON.parse(fs.readFileSync("package.json")).version; const tag=process.env.RELEASE_TAG; if(!/^v\d+\.\d+\.\d+$/.test(tag)||tag!==`v${v}`) throw Error("Tag/version mismatch"); const tagged=execFileSync("git",["rev-parse",`refs/tags/${tag}^{commit}`],{encoding:"utf8"}); const head=execFileSync("git",["rev-parse","HEAD"],{encoding:"utf8"}); if(tagged!==head) throw Error("Checkout is not the tagged commit"); fs.appendFileSync(process.env.GITHUB_ENV,`RELEASE_VERSION=${v}\nRELEASE_REVISION=${head.trim()}\nRELEASE_MINOR=${v.split(".").slice(0,2).join(".")}\nIMAGE_NAME=ghcr.io/${process.env.GITHUB_REPOSITORY.toLowerCase()}\n`);'
+      - run: npm ci
+      - run: npm test
+      - run: npm run test:python
+      - run: npm run check:version
+      - run: npm run pack:release
+      - run: npm run check:package
+      - run: npm run test:package
+      - run: npm run package:python
+      - run: python -m pip install build twine
+      - run: python -m build packaging/python --outdir artifacts/python
+      - run: python -m twine check artifacts/python/*
+      - run: python -m pip install --no-index artifacts/python/*.whl
+      - run: python scripts/smoke-python.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gate-${{ inputs.tag }}
+          path: artifacts/
+      - name: Publish npm
+        if: inputs.publish_npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish "artifacts/npm/gate-llm-${RELEASE_VERSION}.tgz" --access public
+      - name: Publish PyPI
+        if: inputs.publish_pypi
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: artifacts/python/
+      - uses: docker/setup-qemu-action@v3
+        if: inputs.publish_container
+      - uses: docker/setup-buildx-action@v3
+        if: inputs.publish_container
+      - uses: docker/login-action@v3
+        if: inputs.publish_container
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        if: inputs.publish_container
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ env.RELEASE_VERSION }}
+            REVISION=${{ env.RELEASE_REVISION }}
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ env.RELEASE_VERSION }}
+            ${{ env.IMAGE_NAME }}:${{ env.RELEASE_MINOR }}
