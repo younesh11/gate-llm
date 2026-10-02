@@ -9,12 +9,13 @@ import { randomBytes } from 'node:crypto';
 import { z, ZodError } from 'zod';
 import { Store, HttpError, hash, id, now, issueToken, passwordHash, passwordMatches, type Row } from './store.ts';
 import { registerGateway, validateUpstream } from './gateway.ts';
+import { defaultPiiTypes, inspectPolicy, piiTypes, policyPiiTypes } from './guards.ts';
 
 type Options = { directory: string; allowPrivate?: boolean; secureCookie?: boolean; allowRemoteSetup?: boolean; staticDir?: string; timeoutMs?: number; random?: () => number };
 const name = z.string().trim().min(1).max(80);
 const providerSchema = z.object({ name, base_url: z.string().max(500), api_key: z.string().max(4096).optional(), enabled: z.boolean().default(true) });
 const deploymentSchema = z.object({ provider_id: z.string(), alias: z.string().regex(/^[a-zA-Z0-9._/-]{1,100}$/), upstream_model: z.string().min(1).max(200), weight: z.number().int().min(1).max(1000), input_price: z.number().finite().min(0).max(1000), output_price: z.number().finite().min(0).max(1000), enabled: z.boolean().default(true) });
-const policySchema = z.object({ name, blocked_terms: z.array(z.string().trim().min(1).max(100)).max(100), redact_pii: z.boolean(), block_secrets: z.boolean() });
+const policySchema = z.object({ name, blocked_terms: z.array(z.string().trim().min(1).max(100)).max(100), redact_pii: z.boolean(), block_secrets: z.boolean(), pii_types: z.array(z.enum(piiTypes)).max(4).default(defaultPiiTypes), term_match: z.enum(['substring', 'word']).default('substring') });
 const keySchema = z.object({ name, owner: name, models: z.array(z.string().min(1).max(100)).min(1).max(100), policy_id: z.string().nullable().default(null), budget: z.number().finite().min(0.01).max(100000).nullable(), rpm: z.number().int().min(1).max(10000), max_request_tokens: z.number().int().min(1).max(1000000), expires_at: z.string().datetime().nullable().default(null), token_limit: z.number().int().min(0).max(1e12).nullable().optional(), tpm: z.number().int().min(1).max(1e9).nullable().optional(), limit_period: z.enum(['lifetime', 'daily', 'monthly']).optional(), user_id: z.string().nullable().optional() });
 const memberSchema = z.object({ name, email: z.string().trim().email().max(150).transform(v => v.toLowerCase()), password: z.string().min(12).max(200), role: z.enum(['owner', 'viewer']) });
 
@@ -72,7 +73,7 @@ export async function createApp(options: Options) {
     db.transaction(() => {
       db.run('INSERT INTO users VALUES (?, ?, ?, ?, ?, ?, ?)', user.id, 'default', input.name, input.email, passwordHash(input.password), 'owner', now());
       db.run('UPDATE workspaces SET name=? WHERE id=?', input.workspace, 'default');
-      db.run('INSERT INTO policies VALUES (?, ?, ?, ?, ?, ?, ?)', id(), 'default', 'Team baseline', '[]', 1, 1, now());
+      db.run('INSERT INTO policies (id,workspace_id,name,blocked_terms,redact_pii,block_secrets,created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', id(), 'default', 'Team baseline', '[]', 1, 1, now());
       db.audit('default', input.email, 'workspace.created', input.workspace);
     });
     return establishSession(reply, user);
@@ -99,7 +100,7 @@ export async function createApp(options: Options) {
     const providers = db.all('SELECT id, name, base_url, enabled, created_at, (length(secret)>0) AS has_key FROM providers WHERE workspace_id=? ORDER BY created_at DESC', w);
     const deployments = db.all('SELECT d.*, p.name AS provider_name FROM deployments d JOIN providers p ON p.id=d.provider_id WHERE d.workspace_id=? ORDER BY d.alias, d.created_at', w);
     const keys = db.all('SELECT id,name,owner,prefix,models,policy_id,budget,spent,reserved,rpm,max_request_tokens,expires_at,revoked,created_at,token_limit,tpm,limit_period,user_id FROM virtual_keys WHERE workspace_id=? ORDER BY created_at DESC', w).map(key => ({ ...key, models: JSON.parse(key.models), ...db.limitSummary(key) }));
-    const policies = db.all('SELECT * FROM policies WHERE workspace_id=? ORDER BY created_at', w).map(policy => ({ ...policy, blocked_terms: JSON.parse(policy.blocked_terms) }));
+    const policies = db.all('SELECT * FROM policies WHERE workspace_id=? ORDER BY created_at', w).map(policy => ({ ...policy, blocked_terms: JSON.parse(policy.blocked_terms), pii_types: policyPiiTypes(policy) }));
     const since = new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10) + 'T00:00:00.000Z';
     const stats = db.get(`SELECT COUNT(*) AS requests, COALESCE(SUM(cost),0) AS cost, COALESCE(AVG(CASE WHEN status='success' THEN latency_ms END),0) AS latency, COALESCE(SUM(CASE WHEN status='success' THEN 1 ELSE 0 END),0) AS success, COALESCE(SUM(CASE WHEN status='blocked' THEN 1 ELSE 0 END),0) AS blocked, COALESCE(SUM(input_tokens+output_tokens),0) AS tokens FROM requests WHERE workspace_id=? AND created_at>=?`, w, since);
     return { providers, deployments, keys, policies, stats,
@@ -157,13 +158,28 @@ export async function createApp(options: Options) {
   });
   app.post('/api/admin/policies', async request => {
     const user = sessionUser(request), input = policySchema.parse(request.body), policyId = id();
-    db.run('INSERT INTO policies VALUES (?, ?, ?, ?, ?, ?, ?)', policyId, user.workspace_id, input.name, JSON.stringify(input.blocked_terms), Number(input.redact_pii), Number(input.block_secrets), now());
+    db.run('INSERT INTO policies (id,workspace_id,name,blocked_terms,redact_pii,block_secrets,created_at,pii_types,term_match) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', policyId, user.workspace_id, input.name, JSON.stringify(input.blocked_terms), Number(input.redact_pii), Number(input.block_secrets), now(), JSON.stringify(input.pii_types), input.term_match);
     db.audit(user.workspace_id, user.email, 'policy.created', input.name); return { id: policyId };
   });
   app.put('/api/admin/policies/:id', async request => {
     const { user, row } = record('policies', request), input = policySchema.parse(request.body);
-    db.run('UPDATE policies SET name=?,blocked_terms=?,redact_pii=?,block_secrets=? WHERE id=?', input.name, JSON.stringify(input.blocked_terms), Number(input.redact_pii), Number(input.block_secrets), row.id);
+    db.run('UPDATE policies SET name=?,blocked_terms=?,redact_pii=?,block_secrets=?,pii_types=?,term_match=? WHERE id=?', input.name, JSON.stringify(input.blocked_terms), Number(input.redact_pii), Number(input.block_secrets), JSON.stringify(input.pii_types), input.term_match, row.id);
     db.audit(user.workspace_id, user.email, 'policy.updated', input.name); return { ok: true };
+  });
+  app.post('/api/admin/policies/test', async request => {
+    const input = z.object({ policy: policySchema.omit({ name: true }), text: z.string().min(1).max(20000) }).strict().parse(request.body);
+    const inspection = inspectPolicy({ messages: [{ role: 'user', content: input.text }] }, input.policy);
+    // A dry run never stores text, changes usage, or contacts a model provider.
+    return { action: inspection.action, result: inspection.result, findings: inspection.findings, message: inspection.message, text: inspection.body?.messages[0].content ?? null };
+  });
+  app.patch('/api/admin/keys/:id/policy', async request => {
+    const { user, row } = record('virtual_keys', request);
+    const { policy_id } = z.object({ policy_id: z.string().min(1).nullable() }).strict().parse(request.body);
+    if (row.revoked) throw new HttpError(400, 'This key has been revoked.');
+    if (policy_id && !db.get('SELECT id FROM policies WHERE id=? AND workspace_id=?', policy_id, user.workspace_id)) throw new HttpError(400, 'Choose a policy in this workspace.');
+    db.run('UPDATE virtual_keys SET policy_id=? WHERE id=?', policy_id, row.id);
+    db.audit(user.workspace_id, user.email, 'key.policy_updated', row.name);
+    return { ok: true };
   });
   function validateKey(input: z.infer<typeof keySchema>, workspace: string) {
     if (input.user_id && !db.get('SELECT id FROM users WHERE id=? AND workspace_id=?', input.user_id, workspace)) throw new HttpError(400, 'Choose a team member in this workspace.');

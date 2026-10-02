@@ -12,7 +12,7 @@ COPY tests ./tests
 RUN npm run build && npm prune --omit=dev --ignore-scripts
 
 FROM ${NODE_IMAGE} AS runtime
-ARG VERSION=0.1.0
+ARG VERSION=0.2.0
 ARG REVISION=local
 LABEL org.opencontainers.image.title="GATE" \
       org.opencontainers.image.description="Self-hosted LLM gateway" \

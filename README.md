@@ -4,7 +4,7 @@
 
 A small, independent, self-hosted LLM gateway for you and your team. One endpoint for your models, a dashboard for your keys and usage, and limits enforced before requests reach a provider. Built with TypeScript, Fastify, React and SQLite; no LiteLLM dependency.
 
-**Version 0.1.0 · MIT license · Single instance**
+**Version 0.2.0 · MIT license · Single instance**
 
 ## Features
 
@@ -12,18 +12,18 @@ A small, independent, self-hosted LLM gateway for you and your team. One endpoin
 - **Allowances:** money, combined input + output tokens, both, or neither; lifetime, daily or monthly periods.
 - **Request limits:** combined input + output ceiling, requests per minute, tokens per minute and concurrent request limits.
 - **Proxy and routing:** OpenAI-compatible chat completions, JSON/SSE streaming, weighted load balancing, cooldowns and fallback on explicit HTTP 429 responses.
-- **Input guardrails:** blocked terms, selected secret detection and pattern-based PII redaction.
+- **Input guardrails:** reusable per-key policies, a local policy tester, normalized blocked terms, selected secret detection and configurable pattern-based PII redaction.
 - **Playground and analytics:** streaming chat, token and spend breakdowns by key/member/application, request history and audit records.
 - **Team access:** owner/viewer accounts, hashed virtual keys and encrypted provider credentials.
 
-See [gateway behavior and limitations](docs/GATEWAY.md) for accounting, compatibility and security details. Native AWS Bedrock IAM/Converse, SSO, customer billing and multiple gateway replicas are not implemented in 0.1.0.
+See [gateway behavior and limitations](docs/GATEWAY.md) for accounting, compatibility and security details. Native AWS Bedrock IAM/Converse, SSO, customer billing and multiple gateway replicas are not implemented in 0.2.0.
 
 ## Start with Docker
 
 The public image supports Linux AMD64 and ARM64. From this source directory:
 
 ```sh
-GATE_IMAGE=ghcr.io/younesh11/gate-llm:0.1.0 docker compose up -d --no-build --pull always
+GATE_IMAGE=ghcr.io/younesh11/gate-llm:0.2.0 docker compose up -d --no-build --pull always
 ```
 
 To build the image yourself instead, run `docker compose up --build -d`.
@@ -32,14 +32,14 @@ Open **http://127.0.0.1:4310** and create your owner account. Data persists in a
 
 ## Install a release package
 
-The [v0.1.0 release](https://github.com/younesh11/gate-llm/releases/tag/v0.1.0) has public npm and Python downloads with checksums. You do not need a registry account to install them. Publication under the short `gate-llm` name on npm/PyPI is still pending.
+The [v0.2.0 release](https://github.com/younesh11/gate-llm/releases/tag/v0.2.0) has public npm and Python downloads with checksums. You do not need a registry account to install them. Publication under the short `gate-llm` name on npm/PyPI is still pending.
 
 ```sh
 # npm — Node.js 22.13+ required (24 LTS recommended)
-npm install -g https://github.com/younesh11/gate-llm/releases/download/v0.1.0/gate-llm-0.1.0.tgz
+npm install -g https://github.com/younesh11/gate-llm/releases/download/v0.2.0/gate-llm-0.2.0.tgz
 
 # Or pip, inside a virtual environment — Python 3.10+ AND Node.js required
-python -m pip install https://github.com/younesh11/gate-llm/releases/download/v0.1.0/gate_llm-0.1.0-py3-none-any.whl
+python -m pip install https://github.com/younesh11/gate-llm/releases/download/v0.2.0/gate_llm-0.2.0-py3-none-any.whl
 
 # Either installation provides the same command:
 gate-llm serve --port 4310
@@ -53,7 +53,7 @@ Persistent state defaults to `~/.gate-llm`. Use `--data-dir ./data` to keep a so
 
 1. Add a provider with an OpenAI-compatible base URL and credential.
 2. Add a deployment with its real model ID, your chosen alias and input/output prices.
-3. Create a virtual key and select its allowed aliases, guardrails and allowances.
+3. Create and test a policy in **Guardrails**, then select it when creating a virtual key with allowed aliases and allowances. You can also use **Guardrails → Assign to key** for an existing key.
 4. Use the playground, or point your application at the gateway's `/v1` endpoint.
 
 ```sh

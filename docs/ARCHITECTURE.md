@@ -26,4 +26,4 @@ The npm archive, wheel and container all execute the same Node server. The serve
 
 A single process owns each data directory. SQLite transactions prevent concurrent requests from consuming the same reserved quota. Completed usage survives request-log cleanup. Model calls are retried only after explicit HTTP 429 responses; ambiguous failures retain estimated charges.
 
-Schema version 2 is independent of application version 0.1.0. All changes use explicit migrations. The current workspace model is preparatory isolation, not multi-tenant SaaS. Native Bedrock Converse/IAM, SSO, billing and multiple gateway workers are future work.
+Schema version 3 is independent of application version 0.2.0. All changes use explicit migrations. The current workspace model is preparatory isolation, not multi-tenant SaaS. Native Bedrock Converse/IAM, SSO, billing and multiple gateway workers are future work.

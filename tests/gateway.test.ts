@@ -58,6 +58,48 @@ test('gateway integration and security boundaries', async t => {
     assert.ok(JSON.stringify(mock.captured.at(-1)).includes('[EMAIL REDACTED]'));
     assert.ok(!(await admin('state')).body.includes('private@example.com'));
   });
+  await t.test('policy testing is private, validates input and has no upstream or accounting side effects', async () => {
+    const snapshot = () => JSON.stringify(['requests', 'audit', 'reservations', 'usage_daily', 'rate_windows', 'policies'].map(table => db.all(`SELECT * FROM ${table}`)));
+    const before = snapshot(), upstream = mock.captured.length;
+    const draft = { blocked_terms: ['internal only'], block_secrets: true, redact_pii: true, pii_types: ['email', 'phone', 'credit_card'], term_match: 'word' };
+    const blocked = await admin('policies/test', { policy: draft, text: 'gsk_' + 'x'.repeat(40) });
+    assert.equal(blocked.statusCode, 200); assert.equal(blocked.json().action, 'block'); assert.equal(blocked.json().text, null);
+    assert.ok(!blocked.body.includes('gsk_')); assert.equal(blocked.headers['cache-control'], 'no-store');
+    const redacted = await admin('policies/test', { policy: draft, text: 'sample@example.com and +44 20 7946 0958' });
+    assert.equal(redacted.json().text, '[EMAIL REDACTED] and [PHONE REDACTED]');
+    assert.equal((await admin('policies/test', { policy: { ...draft, pii_types: ['invalid'] }, text: 'hello' })).statusCode, 400);
+    assert.equal((await admin('policies/test', { policy: { ...draft, term_match: 'regex' }, text: 'hello' })).statusCode, 400);
+    assert.equal((await admin('policies/test', { policy: draft, text: 'x'.repeat(20001) })).statusCode, 400);
+    assert.equal((await app.inject({ method: 'POST', url: '/api/admin/policies/test', payload: { policy: draft, text: 'hello' } })).statusCode, 401);
+    assert.equal(snapshot(), before); assert.equal(mock.captured.length, upstream);
+  });
+  await t.test('saved policies apply only to assigned keys and updates take effect on new requests', async () => {
+    const draft = { name: 'Restricted local checks', blocked_terms: ['alpha'], term_match: 'word', block_secrets: true, redact_pii: true, pii_types: ['email', 'phone', 'credit_card'] };
+    const saved = await create('policies', draft);
+    const protectedKey = await makeKey({ policy_id: null }), otherKey = await makeKey({ policy_id: null });
+    const before = db.get('SELECT * FROM virtual_keys WHERE id=?', protectedKey.id)!;
+    assert.equal((await admin(`keys/${protectedKey.id}/policy`, { policy_id: saved.id }, 'PATCH')).statusCode, 200);
+    assert.deepEqual({ ...db.get('SELECT * FROM virtual_keys WHERE id=?', protectedKey.id) }, { ...before, policy_id: saved.id });
+    assert.equal((await chat(protectedKey.token, {}, 'alpha')).statusCode, 422);
+    assert.equal(db.get('SELECT guardrail FROM requests WHERE key_id=? ORDER BY created_at DESC LIMIT 1', protectedKey.id)!.guardrail, 'blocked:term');
+    assert.equal(db.get('SELECT COUNT(*) AS count FROM rate_windows WHERE key_id=?', protectedKey.id)!.count, 0);
+    assert.equal((await chat(otherKey.token, {}, 'alpha')).statusCode, 200);
+    assert.equal((await chat(protectedKey.token, {}, 'alphabet')).statusCode, 200);
+    assert.equal((await chat(protectedKey.token, {}, '+44 20 7946 0958 / 4111 1111 1111 1111')).statusCode, 200);
+    assert.equal(mock.captured.at(-1).messages[0].content, '[PHONE REDACTED] / [PAYMENT CARD REDACTED]');
+    assert.equal((await admin(`policies/${saved.id}`, { ...draft, blocked_terms: ['beta'] }, 'PUT')).statusCode, 200);
+    assert.equal((await chat(protectedKey.token, {}, 'beta')).statusCode, 422);
+    assert.equal((await chat(protectedKey.token, {}, 'alpha')).statusCode, 200);
+    assert.equal((await chat(protectedKey.token, { policy_id: null }, 'beta')).statusCode, 400);
+    assert.equal((await chat(protectedKey.token, { stream: true }, 'gsk_' + 'x'.repeat(40))).statusCode, 422);
+    assert.equal((await admin(`keys/${protectedKey.id}/policy`, { policy_id: null }, 'PATCH')).statusCode, 200);
+    assert.equal((await chat(protectedKey.token, {}, 'beta')).statusCode, 200);
+    const stored = (await admin('state')).json().policies.find((p: any) => p.id === saved.id);
+    assert.deepEqual(stored.pii_types, draft.pii_types); assert.equal(stored.term_match, 'word');
+    await admin(`keys/${protectedKey.id}/revoke`, {});
+    assert.equal((await admin(`keys/${protectedKey.id}/policy`, { policy_id: saved.id }, 'PATCH')).statusCode, 400);
+    assert.equal((await admin(`keys/missing/policy`, { policy_id: saved.id }, 'PATCH')).statusCode, 404);
+  });
   await t.test('request limits count input and output and reject before upstream or accounting', async () => {
     const k = await makeKey({ max_request_tokens: 2000 });
     const before = mock.captured.length;
@@ -139,15 +181,18 @@ test('gateway integration and security boundaries', async t => {
     assert.equal((await admin('state', undefined, 'GET', viewerCookie)).statusCode, 200);
     assert.equal((await admin('usage', undefined, 'GET', viewerCookie)).statusCode, 200);
     assert.equal((await admin('keys', {}, 'POST', viewerCookie)).statusCode, 403);
+    assert.equal((await admin('policies/test', {}, 'POST', viewerCookie)).statusCode, 403);
+    assert.equal((await admin(`keys/${key.id}/policy`, { policy_id: null }, 'PATCH', viewerCookie)).statusCode, 403);
     const viewer = db.get('SELECT id FROM users WHERE email=?', 'viewer@example.test')!;
     assert.equal((await admin(`users/${viewer.id}`, undefined, 'DELETE')).statusCode, 200);
     assert.equal((await admin('state', undefined, 'GET', viewerCookie)).statusCode, 401);
   });
   await t.test('workspace scope rejects references to another workspace', async () => {
     db.run('INSERT INTO workspaces VALUES (?,?)', 'other', 'Other');
-    const foreign = id(); db.run('INSERT INTO policies VALUES (?,?,?,?,?,?,?)', foreign, 'other', 'Foreign', '[]', 0, 0, now());
+    const foreign = id(); db.run('INSERT INTO policies (id,workspace_id,name,blocked_terms,redact_pii,block_secrets,created_at) VALUES (?,?,?,?,?,?,?)', foreign, 'other', 'Foreign', '[]', 0, 0, now());
     const response = await admin('keys', { name: 'Bad scope', owner: 'test', models: ['chat'], policy_id: foreign, budget: 10, rpm: 60, max_request_tokens: 8192 });
     assert.equal(response.statusCode, 400);
+    assert.equal((await admin(`keys/${key.id}/policy`, { policy_id: foreign }, 'PATCH')).statusCode, 400);
     assert.equal((await admin(`policies/${foreign}`, { name: 'Tampered', blocked_terms: [], redact_pii: false, block_secrets: false }, 'PUT')).statusCode, 404);
   });
   await t.test('money and token allowances are independent gates on the same key', async () => {
@@ -302,7 +347,7 @@ test('existing databases migrate per-request limits and reported token splits wi
     db.run('INSERT INTO virtual_keys (id,workspace_id,name,owner,token_hash,prefix,models,budget,rpm,max_request_tokens,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)', keyId, 'default', 'Old key', 'Team', hash('old-key'), 'rk_old', '["chat"]', 10000000, 60, 2048, now());
     db.recordUsage(keyId, now(), 50, 200, 30, 70);
     db.log({ key_id: keyId, input_tokens: 30, output_tokens: 70, cost: 50 });
-    db.db.exec('ALTER TABLE virtual_keys RENAME COLUMN max_request_tokens TO max_output; ALTER TABLE virtual_keys DROP COLUMN user_id; ALTER TABLE usage_daily DROP COLUMN input_tokens; ALTER TABLE usage_daily DROP COLUMN output_tokens; PRAGMA user_version=1;');
+    db.db.exec('ALTER TABLE virtual_keys RENAME COLUMN max_request_tokens TO max_output; ALTER TABLE virtual_keys DROP COLUMN user_id; ALTER TABLE usage_daily DROP COLUMN input_tokens; ALTER TABLE usage_daily DROP COLUMN output_tokens; ALTER TABLE policies DROP COLUMN pii_types; ALTER TABLE policies DROP COLUMN term_match; PRAGMA user_version=1;');
     db.close(); db = new Store(directory);
     const key = db.get('SELECT * FROM virtual_keys WHERE id=?', keyId)!;
     assert.equal(key.max_request_tokens, 2048); assert.equal(key.budget, 10000000); assert.equal(key.user_id, null);

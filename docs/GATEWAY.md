@@ -5,7 +5,7 @@
 - **Keys:** one-time display, hashed storage, create/edit/revoke/rotate, model allowlists, expiry, combined dollar/token allowances with lifetime/daily/monthly periods, per-minute request and token limits, per-request combined input + output limits, and eight concurrent requests per key. Rotation invalidates the old token immediately while retaining usage and policy settings. Revocation blocks new requests; already accepted requests can finish.
 - **Providers:** create/update/disable OpenAI-compatible endpoints; provider API keys encrypted with AES-256-GCM. No credential is returned by management APIs.
 - **Routing:** weighted selection among enabled deployments under an alias; fallback on explicit HTTP 429 responses, up to three total attempts; cooldowns after 429 and 5xx responses. The remaining enabled deployments take future traffic during cooldown.
-- **Input guardrails:** per-key policies with blocked terms, selected secret patterns, and email/US SSN pattern redaction. No client override. These checks are intentionally limited; there is no semantic moderation service, guaranteed PII detection, output inspection, or complete prompt-injection protection.
+- **Input guardrails:** reusable per-key policies with normalized blocked terms, selected secret patterns, configurable PII pattern redaction and a local policy tester. No client override. These checks are intentionally limited; there is no semantic moderation service, guaranteed PII detection, output inspection, or complete prompt-injection protection.
 - **Playground:** streaming conversations, system prompt, model/temperature/total-token controls, stop generation, token/latency display. Virtual key and chat history remain in browser memory only.
 - **Workspace:** owner/viewer dashboard accounts, member creation/removal, audit records, metadata-only request history, seven-day usage overview. Viewers can inspect workspace metadata and use their separately issued virtual keys; owners manage all settings.
 
@@ -19,6 +19,39 @@ curl http://127.0.0.1:4310/v1/chat/completions \
 ```
 
 Use your gateway's `/v1` base URL in compatible clients. This version does not implement `/v1/responses`, embeddings, images, audio, batches, or native Anthropic/Gemini protocols. Native providers must expose a compatible endpoint to work here. Unknown request parameters are rejected rather than silently ignored.
+
+## Create, test and assign guardrail policies
+
+1. Open **Guardrails → Create policy**. Choose credential blocking, PII categories, blocked terms and a term matching mode.
+2. Use **Test this policy** to inspect sample text with the draft settings. It reports allowed, redacted or blocked, with rule names and counts. Blocked input is not echoed in the result. Tests do not contact providers, consume quotas, save prompts or create request/audit records.
+3. Save the policy, then use its **Assign to key** action to select one existing key. Alternatively choose it in **Virtual keys → Create / Edit → Guardrail policy**. New keys start with no policy selected; creating a policy alone does not protect any key.
+4. The policy applies to every subsequent request using that key, including playground and streaming requests. One key has at most one policy. Assigning another replaces the current policy. Choose **No policy** in the key editor to remove the assignment. Editing a shared policy changes checks for all keys assigned to it; accepted requests already in flight retain their original checks.
+
+| Check | Behavior |
+| --- | --- |
+| Credential patterns | Blocks selected OpenAI-style, Groq, GATE, Stripe, Hugging Face, Google, GitHub, GitLab, Slack and AWS access-key patterns and private-key headers. These are local shape checks, not provider validation or arbitrary password detection. |
+| Blocked terms | Up to 100 literal terms/phrases, 100 characters each. Substring mode matches within words; whole-word mode checks Unicode letter/number/underscore boundaries. Both normalize case, NFKC compatible characters, selected invisible characters and whitespace runs. No regular expressions or semantic classification. |
+| Default PII | Email addresses and separated US SSN patterns become `[EMAIL REDACTED]` and `[ID REDACTED]`. Categories can be selected independently or redaction disabled. |
+| Optional PII | Phone numbers with an explicit `+` country prefix (8–15 digits) and 13–19 digit payment-card patterns with a valid Luhn checksum become `[PHONE REDACTED]` and `[PAYMENT CARD REDACTED]`. These start disabled, and matches can be false positives. |
+
+Secrets are inspected in request string values and property names; blocked terms apply to string values, excluding API envelope property names. Field names inside JSON-encoded content are also checked for blocked terms. JSON-encoded strings are decoded for inspection, including escaped function arguments. PII redaction applies to string values in message content and `tool_calls[].function.arguments`, preserving valid JSON when arguments are structured. PII in structured field names blocks the request instead of renaming fields. Routing identifiers, tool schemas, numeric values and other metadata are not PII-redacted. Encodings/obfuscations outside the supported normalization and non-text data are not comprehensively detected. Nested inspection is limited to 64 levels; deeper inputs are rejected.
+
+Blocking runs before upstream calls and quota reservations, returning HTTP 422 with code `guardrail_blocked`. Request metadata records `blocked:secret`, `blocked:term` or `blocked:pii_field_name`, without matched text. Allowed redactions record `redacted:N`. These are input-only checks; provider responses are not inspected.
+
+The owner-authenticated management API accepts the following policy fields on `POST /api/admin/policies` and `PUT /api/admin/policies/:id`:
+
+```json
+{
+  "name": "Team privacy",
+  "block_secrets": true,
+  "redact_pii": true,
+  "pii_types": ["email", "us_ssn", "phone", "credit_card"],
+  "blocked_terms": ["internal only"],
+  "term_match": "word"
+}
+```
+
+Omitted `pii_types` defaults to `["email","us_ssn"]`; omitted `term_match` defaults to `"substring"`. `POST /api/admin/policies/test` takes `{ "policy": { ...fields except name }, "text": "sample text" }` (1–20,000 characters), and returns `{ action, result, findings, text, message? }`. The result text is sanitized for redaction and `null` for blocked input. `PATCH /api/admin/keys/:id/policy` takes `{ "policy_id": "saved-policy-id" }` or `null` to detach, without changing key limits or usage. All policy mutations, assignments and tests require an owner dashboard session and same-origin requests; virtual API keys cannot access them. A caller cannot override its assigned policy through the chat API.
 
 ## Budget and retry behavior
 

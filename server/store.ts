@@ -78,6 +78,15 @@ export class Store {
         `);
       });
     }
+    if (Number(this.get('PRAGMA user_version')!.user_version) < 3) {
+      this.transaction(() => {
+        this.db.exec(`
+          ALTER TABLE policies ADD COLUMN pii_types TEXT NOT NULL DEFAULT '["email","us_ssn"]';
+          ALTER TABLE policies ADD COLUMN term_match TEXT NOT NULL DEFAULT 'substring';
+          PRAGMA user_version=3;
+        `);
+      });
+    }
   }
   all(sql: string, ...params: any[]): Row[] { return this.db.prepare(sql).all(...params) as Row[]; }
   get(sql: string, ...params: any[]): Row | undefined { return this.db.prepare(sql).get(...params) as Row | undefined; }

@@ -12,7 +12,7 @@ CLI flags override environment variables. Existing environment variables take pr
 | ALLOW_REMOTE_SETUP | --allow-remote-setup | false | Permit first-owner setup beyond loopback |
 | GATE_RUNTIME_DIR | — | ~/.cache/gate-llm | Python launcher's unpacked runtime cache only |
 | GATE_PORT | — | 4310 | Compose host port; distinct from container PORT |
-| GATE_IMAGE | — | gate-llm:0.1.0 | Compose image reference |
+| GATE_IMAGE | — | gate-llm:0.2.0 | Compose image reference |
 
 Boolean environment values must be exactly `true` to enable an option. CLI flags enable the corresponding option. `gate-llm --help` and `--version` do not start the server.
 

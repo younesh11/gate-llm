@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import { lookup } from 'node:dns/promises';
 import { z } from 'zod';
 import { Store, HttpError, hash, id, now, type Row } from './store.ts';
-import { applyPolicy, orderDeployments } from './guards.ts';
+import { applyPolicy, GuardrailError, orderDeployments } from './guards.ts';
 
 const message = z.object({ role: z.enum(['system', 'developer', 'user', 'assistant', 'tool']), content: z.string().max(100_000).nullable(), name: z.string().optional(), tool_call_id: z.string().optional(), tool_calls: z.array(z.any()).max(64).optional() }).strict();
 const chatBody = z.object({
@@ -61,7 +61,7 @@ export function registerGateway(app: FastifyInstance, db: Store, options: { allo
     let guardrail: string | null = null;
     try { const guarded = applyPolicy(body, policy); body = guarded.body; guardrail = guarded.result; }
     catch (error) {
-      db.log({ id: requestId, workspace_id: key.workspace_id, key_id: key.id, key_name: key.name, model: body.model, status: 'blocked', http_status: 422, latency_ms: Date.now() - started, guardrail: 'blocked' });
+      if (error instanceof GuardrailError) db.log({ id: requestId, workspace_id: key.workspace_id, key_id: key.id, key_name: key.name, model: body.model, status: 'blocked', http_status: 422, latency_ms: Date.now() - started, guardrail: error.result });
       throw error;
     }
     const candidates = db.all('SELECT d.*, p.base_url, p.secret FROM deployments d JOIN providers p ON p.id=d.provider_id WHERE d.workspace_id=? AND d.alias=? AND d.enabled=1 AND p.enabled=1 AND d.cooldown_until<=?', key.workspace_id, body.model, Date.now());
