@@ -7,7 +7,7 @@ import re
 import subprocess
 import tempfile
 import threading
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 
 with tempfile.TemporaryDirectory(prefix="gate-python-") as directory:
@@ -45,7 +45,9 @@ with tempfile.TemporaryDirectory(prefix="gate-python-") as directory:
         with urlopen(origin, timeout=10) as response:
             assert 'id="root"' in response.read().decode()
         assert list((root / "runtime").glob("*/node_modules/fastify/package.json"))
-        print("Installed Python wheel passes: bundled runtime, fresh state, HTTP API and dashboard.")
+        setup = Request(origin + "/api/setup", data=json.dumps({"workspace": "Python test", "name": "Owner", "email": "python@example.test", "password": "synthetic-python-password"}).encode(), headers={"Content-Type": "application/json"})
+        with urlopen(setup, timeout=10) as response:
+            assert response.status == 200
     finally:
         child.terminate()
         try:
@@ -53,3 +55,13 @@ with tempfile.TemporaryDirectory(prefix="gate-python-") as directory:
         except subprocess.TimeoutExpired:
             child.kill()
             child.wait()
+    def maintenance(*args, password=None):
+        result = subprocess.run(["gate-llm", *args], cwd=root, env=env, input=password, capture_output=True, text=True, timeout=30, check=True)
+        if password:
+            assert password.strip() not in result.stdout + result.stderr
+        return json.loads(result.stdout)
+    assert maintenance("backup", "--data-dir", str(root / "state"), "--output", str(root / "backup"))["status"] == "backup_created"
+    assert maintenance("verify-backup", "--input", str(root / "backup"))["status"] == "backup_verified"
+    assert maintenance("restore", "--input", str(root / "backup"), "--data-dir", str(root / "restored"))["status"] == "backup_restored"
+    assert maintenance("reset-password", "--data-dir", str(root / "restored"), "--email", "python@example.test", "--password-stdin", password="synthetic-replacement-password\n")["status"] == "password_reset"
+    print("Installed Python wheel passes: bundled runtime, HTTP API, dashboard, backup/restore and password recovery.")

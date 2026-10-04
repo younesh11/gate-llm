@@ -1,11 +1,11 @@
 name: gate-llm
 services:
   relay:
-    image: ${GATE_IMAGE:-gate-llm:0.2.1}
+    image: ${GATE_IMAGE:-gate-llm:0.2.2}
     build:
       context: .
       args:
-        VERSION: ${GATE_VERSION:-0.2.1}
+        VERSION: ${GATE_VERSION:-0.2.2}
         REVISION: ${GATE_REVISION:-local}
     ports:
       - "127.0.0.1:${GATE_PORT:-4310}:4310"

@@ -1,6 +1,6 @@
 # Operating a single GATE instance
 
-Version 0.2.1 is the first production-foundations increment: restart ownership, readiness and private operational logging. HTTPS deployment hardening, account recovery, automated backup/restore drills, metrics/alerts and sustained load testing remain work to complete before a production-readiness claim.
+Version 0.2.2 adds verified offline backup/restore and local password recovery to restart ownership, readiness and private operational logging. HTTPS deployment hardening, deployment-specific backup scheduling, metrics/alerts and sustained load testing remain work to complete before a production-readiness claim.
 
 ## Liveness and readiness
 
@@ -45,4 +45,4 @@ After an abrupt stop, unfinished reservations become estimated charges once, pre
 3. A gateway that refuses startup: stop the other owner; do not delete the SQLite lock database. Follow the explicit legacy-marker procedure only during an older-version upgrade.
 4. A `gateway_settlement_failed` event: investigate storage before resuming traffic. Unresolved reservations remain for conservative recovery; do not clear them by hand.
 
-Back up the entire stopped data directory, including `relay.sqlite`, its WAL files and `encryption.key`. Backups are sensitive and must stay out of Git and release artifacts.
+Use the [backup/restore and account recovery commands](RECOVERY.md) against stopped state. Backups are sensitive and must stay out of Git and release artifacts. Recovery procedures include isolated restore drills and Docker examples.

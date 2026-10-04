@@ -22,7 +22,15 @@ try {
   assert.equal((await (await fetch(`${origin}/api/session`)).json()).setup, true);
   const html = await (await fetch(origin)).text(); assert.ok(html.includes('id="root"'));
   const asset = html.match(/src="([^\"]+\.js)"/)[1]; assert.equal((await fetch(origin + asset)).status, 200);
-  console.log('Packaged CLI, server, fresh setup, dashboard and assets pass from an unrelated working directory.');
+  const setup = await fetch(`${origin}/api/setup`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspace: 'Package test', name: 'Owner', email: 'package@example.test', password: 'synthetic-package-password' }) });
+  assert.equal(setup.status, 200);
+  await new Promise(resolve => { child.once('exit', resolve); child.kill('SIGTERM'); });
+  const run = (args, input) => JSON.parse(execFileSync(process.execPath, [cli, ...args], { cwd: tmpdir(), encoding: 'utf8', input, timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] }));
+  assert.equal(run(['backup', '--data-dir', join(directory, 'state'), '--output', join(directory, 'backup')]).status, 'backup_created');
+  assert.equal(run(['verify-backup', '--input', join(directory, 'backup')]).status, 'backup_verified');
+  assert.equal(run(['restore', '--input', join(directory, 'backup'), '--data-dir', join(directory, 'restored')]).status, 'backup_restored');
+  assert.equal(run(['reset-password', '--data-dir', join(directory, 'restored'), '--email', 'package@example.test', '--password-stdin'], 'synthetic-replacement-password\n').status, 'password_reset');
+  console.log('Packaged CLI passes: server, setup, dashboard, backup verification, restore and password recovery from an unrelated working directory.');
 } finally {
   if (child && child.exitCode === null) { child.kill('SIGTERM'); await new Promise(resolve => child.once('exit', resolve)); }
   rmSync(directory, { recursive: true, force: true });

@@ -13,9 +13,11 @@ CLI flags override environment variables. Existing environment variables take pr
 | LOG_LEVEL | --log-level | info | Structured operational logs: silent, fatal, error, warn, info, debug or trace |
 | GATE_RUNTIME_DIR | — | ~/.cache/gate-llm | Python launcher's unpacked runtime cache only |
 | GATE_PORT | — | 4310 | Compose host port; distinct from container PORT |
-| GATE_IMAGE | — | gate-llm:0.2.1 | Compose image reference |
+| GATE_IMAGE | — | gate-llm:0.2.2 | Compose image reference |
 
 Boolean environment values must be exactly `true` to enable an option. CLI flags enable the corresponding option. `gate-llm --help` and `--version` do not start the server.
+
+Offline `backup` and `reset-password` honor `--data-dir`, `DATA_DIR` and `--env-file`. `restore` requires an explicit new `--data-dir` and ignores environment files; `verify-backup` requires `--input`. Command-specific flags are checked to catch mistakes. See [recovery](RECOVERY.md).
 
 See [operations](OPERATIONS.md) for readiness, request correlation, log privacy and crash recovery. Successful health probes are omitted from request logs; `silent` disables operational logging, including the startup address.
 

@@ -2,11 +2,13 @@
 
 1. Read CHANGELOG.md and the release notes for migrations or changed limits.
 2. Stop the gateway and wait for accepted requests to finish.
-3. Back up the **whole** data directory, including relay.sqlite, any WAL files and encryption.key. Keep backups private. Do not commit or publish them.
+3. On 0.2.2+, use the verified offline [backup command](RECOVERY.md). For earlier versions, copy the **whole** stopped data directory, including relay.sqlite, any WAL files and encryption.key. Keep backups private. Do not commit or publish them.
 4. Install the new pinned package/image and start it with the same data path or named volume.
 5. Check /ready, sign in, and verify models, keys and usage before reconnecting clients.
 
 Never run two versions against one data directory. The process lock guards concurrent writers, but is not a backup mechanism. Do not manually delete a live process lock.
+
+Version 0.2.2 retains schema 3. Its maintenance commands accept schema 3 only and never migrate the source. Back up older schemas with the stopped-directory method before upgrading. A restore uses a new directory and invalidates browser sessions; password recovery requires an existing account and stopped gateway. Never start an older release against a `restore.incomplete` directory: older releases do not understand that marker. Restoring an older snapshot also rolls back key revocations and usage; reconcile both before reconnecting clients.
 
 Version 0.2.1 replaces PID-based ownership with an OS-released SQLite lock in `process-lock.sqlite`, without changing application schema version 3. Keep this file in place; never delete it to bypass a running owner. `process.lock` remains as a compatibility marker so older versions refuse concurrent startup. A marker left by 0.2.1 is recovered automatically after a crash. During an upgrade from an older version, an ambiguous legacy PID marker is rejected: stop the old process/container and verify no gateway is using that directory before removing **only** the stale `process.lock` marker. Do not automate deletion of lock files. A clean shutdown removes the marker normally.
 

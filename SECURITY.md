@@ -9,6 +9,8 @@ Operational boundaries:
 - One process per SQLite data directory; no distributed consistency or tenant onboarding.
 - Keep the dashboard on a trusted network. Use HTTPS and COOKIE_SECURE=true for team access.
 - The complete data directory, including encryption.key, is sensitive. Anyone who can read the database and that key can decrypt provider secrets.
+- Offline backups contain that same key. Private POSIX permissions and checksums do not encrypt or authenticate a backup. Use encrypted private storage and restore only trusted snapshots; see [recovery](docs/RECOVERY.md).
+- Local password recovery requires access to stopped state, invalidates the selected account's sessions and records an audit event. Restores invalidate all saved browser sessions, but can roll back virtual-key revocations and usage to the snapshot time.
 - Virtual keys grant model access; administrative sessions grant dashboard access. Assign the owner role only to trusted operators.
 - Allow private upstream URLs only when trusted administrators control provider configuration.
 - Guardrails match selected input patterns. They are not comprehensive moderation or prompt-injection defenses.

@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { createApp } from '../server/app.ts';
 import { Store } from '../server/store.ts';
 import { parseLogLevel } from '../server/operations.ts';
+import { backupState, restoreState } from '../server/maintenance.ts';
 
 const fixture = fileURLToPath(new URL('./fixtures/lock-worker.ts', import.meta.url));
 function worker(directory: string, seed = false) {
@@ -41,6 +42,16 @@ test('a killed gateway releases its directory lock and recovers reservations onc
   await assert.rejects(contender.ready, /already in use/);
   await stop(first.child, 'SIGKILL');
   assert.equal(existsSync(join(directory, 'process.lock')), true, 'abrupt death leaves the marker');
+  const snapshot = directory + '-backup', restored = directory + '-restored';
+  t.after(() => { rmSync(snapshot, { recursive: true, force: true }); rmSync(restored, { recursive: true, force: true }); });
+  assert.ok(readFileSync(join(directory, 'relay.sqlite-wal')).length > 0, 'crash leaves committed data in WAL');
+  backupState(directory, snapshot); restoreState(snapshot, restored);
+  const snapshotDb = new Store(restored);
+  try {
+    snapshotDb.recoverReservations();
+    assert.equal(snapshotDb.get('SELECT spent FROM virtual_keys WHERE id=?', 'crash-key')!.spent, 400);
+    assert.equal(snapshotDb.limitSummary(snapshotDb.get('SELECT * FROM virtual_keys WHERE id=?', 'crash-key')!).tokens_used, 3000);
+  } finally { snapshotDb.close(); }
   // A recycled PID must not prevent a restart: the SQLite lock is authoritative.
   writeFileSync(join(directory, 'process.lock'), `GATE_SQLITE_LOCK_V1 ${process.pid} previous-container\n`);
   const second = worker(directory);

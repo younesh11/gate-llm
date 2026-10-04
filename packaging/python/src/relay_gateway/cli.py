@@ -79,7 +79,7 @@ def main():
         print(__version__)
         return
     if args == ["--help"]:
-        print("GATE — self-hosted LLM gateway\n\nUsage: gate-llm [serve] [options]\n\nRequires Node.js 22.13+ (24 LTS recommended). Runtime dependencies and dashboard are bundled.\nOptions: --host ADDRESS, --port NUMBER, --data-dir PATH, --env-file PATH,\n         --allow-private-upstreams, --allow-remote-setup, --secure-cookie, --version\nPersistent data defaults to ~/.gate-llm. GATE_RUNTIME_DIR overrides the runtime cache.\nThis package is a launcher; it is not a Python model SDK.")
+        print("GATE — self-hosted LLM gateway\n\nUsage: gate-llm [serve] [options]\n       gate-llm backup --data-dir PATH --output NEW_DIRECTORY\n       gate-llm verify-backup --input BACKUP_DIRECTORY\n       gate-llm restore --input BACKUP_DIRECTORY --data-dir NEW_DIRECTORY\n       gate-llm reset-password --data-dir PATH --email ACCOUNT_EMAIL\n\nStop the gateway before backup or password reset. Restore never overwrites a directory.\nPassword reset prompts privately; use --password-stdin to read one line from a pipe.\nBackups contain the encryption key: store them privately, outside your data directory.\n\nRequires Node.js 22.13+ (24 LTS recommended). Runtime dependencies and dashboard are bundled.\nServe options: --host ADDRESS, --port NUMBER, --data-dir PATH, --env-file PATH,\n         --allow-private-upstreams, --allow-remote-setup, --secure-cookie, --log-level LEVEL, --version\nPersistent data defaults to ~/.gate-llm. GATE_RUNTIME_DIR overrides the runtime cache.\nThis package is a launcher; it is not a Python model SDK.")
         return
     try:
         node = node_path()

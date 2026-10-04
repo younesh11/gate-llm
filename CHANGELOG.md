@@ -6,6 +6,14 @@ This project uses Semantic Versioning. Dates use YYYY-MM-DD.
 
 No unreleased changes.
 
+## [0.2.2] - 2026-10-04
+
+- Add offline `backup`, `verify-backup` and `restore` commands. Standalone SQLite snapshots include WAL data, the matching encryption key, and a versioned SHA-256 manifest; verification checks database integrity and provider credential decryption. POSIX files are private, but the archive is not encrypted.
+- Restore into a new directory without overwriting existing state. Preserve configuration, budgets, token usage and pending reservations; invalidate saved browser sessions and record an audit event. Incomplete restore markers prevent startup of partial state. Application schema stays at version 3; future schemas are refused.
+- Add local `reset-password` with a hidden confirmation prompt or explicit bounded stdin input. Password changes, session revocation and audit records commit atomically for the selected existing account. No recovery HTTP endpoint or default account is added.
+- Add recovery tests for crashed WAL snapshots, corruption, key mismatch, ownership, session invalidation and failed transaction rollback. Exercise maintenance commands through packaged npm/Python installs and disposable Docker volumes; document private storage, restore drills and point-in-time limitations.
+- Built-in backup scheduling, encrypted archive export, HTTPS deployment, metrics/alerts and sustained load qualification remain future work.
+
 ## [0.2.1] - 2026-10-04
 
 - Replace PID-only directory ownership with an exclusive SQLite lock that the operating system releases after abrupt termination, including reused container PIDs. Retain a compatibility marker for older versions and release ownership after failed initialization. Application schema remains version 3.

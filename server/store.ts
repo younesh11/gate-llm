@@ -5,16 +5,20 @@ import { randomBytes, randomUUID, createHash, createCipheriv, createDecipheriv, 
 import { DirectoryLock } from './directory-lock.ts';
 
 export type Row = Record<string, any>;
+export const schemaVersion = 3;
 export class Store {
   db!: DatabaseSync;
   encryptionKey: Buffer;
   private lock: DirectoryLock;
   private closed = false;
   constructor(public directory: string) {
+    if (existsSync(join(directory, 'backup-manifest.json'))) throw new Error('This is a backup. Restore it into a new data directory first.');
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     chmodSync(directory, 0o700);
     this.lock = new DirectoryLock(directory);
     try {
+      if (existsSync(join(directory, 'restore.incomplete'))) throw new Error('Restore is incomplete. Restore again into a new directory.');
+      if (existsSync(join(directory, 'backup-manifest.json'))) throw new Error('This is a backup. Restore it into a new data directory first.');
       const path = join(directory, 'encryption.key');
       if (!existsSync(path) && existsSync(join(directory, 'relay.sqlite'))) {
         throw new Error('The database exists but its encryption key is missing. Restore the key from your backup.');
@@ -23,6 +27,7 @@ export class Store {
       this.encryptionKey = readFileSync(path);
       if (this.encryptionKey.length !== 32) throw new Error('Invalid encryption key. Restore it from your backup.');
       this.db = new DatabaseSync(join(directory, 'relay.sqlite'));
+      if (Number(this.db.prepare('PRAGMA user_version').get()!.user_version) > schemaVersion) throw new Error('Database schema is newer than this GATE release.');
       chmodSync(join(directory, 'relay.sqlite'), 0o600);
       this.db.exec(`
         PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
