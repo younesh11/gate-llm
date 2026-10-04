@@ -12,7 +12,7 @@ COPY tests ./tests
 RUN npm run build && npm prune --omit=dev --ignore-scripts
 
 FROM ${NODE_IMAGE} AS runtime
-ARG VERSION=0.2.0
+ARG VERSION=0.2.1
 ARG REVISION=local
 LABEL org.opencontainers.image.title="GATE" \
       org.opencontainers.image.description="Self-hosted LLM gateway" \
@@ -30,6 +30,6 @@ RUN mkdir -p /app/data && chown node:node /app/data
 USER node
 EXPOSE 4310
 STOPSIGNAL SIGTERM
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD node -e "fetch('http://127.0.0.1:'+process.env.PORT+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD node -e "fetch('http://127.0.0.1:'+process.env.PORT+'/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 ENTRYPOINT ["node", "build/cli.js"]
 CMD ["serve"]

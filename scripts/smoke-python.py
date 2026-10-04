@@ -38,6 +38,8 @@ with tempfile.TemporaryDirectory(prefix="gate-python-") as directory:
             health = json.load(response)
         version = subprocess.check_output(["gate-llm", "--version"], text=True).strip()
         assert health["version"] == version
+        with urlopen(origin + "/ready", timeout=10) as response:
+            assert json.load(response)["status"] == "ready"
         with urlopen(origin + "/api/session", timeout=10) as response:
             assert json.load(response)["setup"] is True
         with urlopen(origin, timeout=10) as response:

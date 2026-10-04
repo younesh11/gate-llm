@@ -6,6 +6,14 @@ This project uses Semantic Versioning. Dates use YYYY-MM-DD.
 
 No unreleased changes.
 
+## [0.2.1] - 2026-10-04
+
+- Replace PID-only directory ownership with an exclusive SQLite lock that the operating system releases after abrupt termination, including reused container PIDs. Retain a compatibility marker for older versions and release ownership after failed initialization. Application schema remains version 3.
+- Add `/ready` to check local database access separately from `/health` liveness; Docker health checks now use readiness. This does not probe providers or prove disk write capacity.
+- Add structured operational metadata logs, configurable LOG_LEVEL/--log-level, and generated request IDs shared by HTTP responses, usage records and gateway settlement events. Exclude prompts, credentials, raw URLs and raw error details.
+- Add process-kill/restart, concurrent-owner, initialization-failure, readiness and log-privacy tests, plus a disposable container restart check in CI.
+- Document operations and legacy-lock upgrade handling. This release is the first foundations increment; backup automation, account recovery, metrics/alerts and sustained load qualification remain future work.
+
 ## [0.2.0] - 2026-10-02
 
 - Reusable guardrail policies created and tested in Guardrails, then explicitly assigned to individual virtual keys. New keys default to no policy; existing assignments are retained.

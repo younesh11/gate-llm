@@ -23,7 +23,7 @@ docker build --build-arg VERSION=X.Y.Z -t gate-llm:X.Y.Z .
 
 Use `python -m venv .venv-release` and install `build twine` inside it when those tools are unavailable. Inspect the npm manifest, wheel/sdist contents, checksums and release notes before publication. Artifact packaging includes no data directory, .env file, provider credential or encryption key. The Python wheel bundles runtime dependencies, so regenerate it after every npm dependency change.
 
-Commit the reviewed source and tag the commit: `git tag -a vX.Y.Z -m 'GATE X.Y.Z'`. Do not tag an unreviewed or dirty tree. The configured repository is https://github.com/younesh11/gate-llm; create it before publication.
+Commit the reviewed source and tag the commit: `git tag -a vX.Y.Z -m 'GATE X.Y.Z'`. Do not tag an unreviewed or dirty tree. The configured repository is https://github.com/younesh11/gate-llm; verify its remote before publication.
 
 ## Publish
 
@@ -46,7 +46,7 @@ Use npm/PyPI trusted publishing from CI where possible. Do not put publishing to
 
 Before enabling publication:
 
-- Create `younesh11/gate-llm` on GitHub and configure its remote.
+- Verify the existing `younesh11/gate-llm` repository and its configured remote.
 - Create a protected `release` environment with appropriate reviewers.
 - For npm, provide an authorized NPM_TOKEN repository/environment secret or migrate that step to configured trusted publishing.
 - For PyPI, register a trusted publisher with the repository, release.yml workflow and `release` environment.

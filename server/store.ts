@@ -1,91 +1,90 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync, chmodSync, existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { mkdirSync, chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes, randomUUID, createHash, createCipheriv, createDecipheriv, scryptSync, timingSafeEqual } from 'node:crypto';
+import { DirectoryLock } from './directory-lock.ts';
 
 export type Row = Record<string, any>;
 export class Store {
-  db: DatabaseSync;
+  db!: DatabaseSync;
   encryptionKey: Buffer;
-  lockPath: string;
+  private lock: DirectoryLock;
+  private closed = false;
   constructor(public directory: string) {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     chmodSync(directory, 0o700);
-    this.lockPath = join(directory, 'process.lock');
-    if (existsSync(this.lockPath)) {
-      const pid = Number(readFileSync(this.lockPath, 'utf8'));
-      let alive = true;
-      try { process.kill(pid, 0); } catch (error: any) { if (error.code === 'ESRCH') alive = false; }
-      if (alive) throw new Error('This data directory is already in use. Run one gateway instance per directory.');
-      unlinkSync(this.lockPath);
-    }
-    writeFileSync(this.lockPath, String(process.pid), { flag: 'wx', mode: 0o600 });
-    const path = join(directory, 'encryption.key');
-    if (!existsSync(path) && existsSync(join(directory, 'relay.sqlite'))) {
-      unlinkSync(this.lockPath);
-      throw new Error('The database exists but its encryption key is missing. Restore the key from your backup.');
-    }
-    if (!existsSync(path)) writeFileSync(path, randomBytes(32), { mode: 0o600, flag: 'wx' });
-    this.encryptionKey = readFileSync(path);
-    if (this.encryptionKey.length !== 32) throw new Error('Invalid encryption key. Restore it from your backup.');
-    this.db = new DatabaseSync(join(directory, 'relay.sqlite'));
-    chmodSync(join(directory, 'relay.sqlite'), 0o600);
-    this.db.exec(`
-      PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
-      CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL);
-      INSERT OR IGNORE INTO workspaces VALUES ('default', 'My workspace');
-      CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL, created_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires_at INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS providers (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, base_url TEXT NOT NULL, secret TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS deployments (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider_id TEXT NOT NULL REFERENCES providers(id), alias TEXT NOT NULL, upstream_model TEXT NOT NULL, weight INTEGER NOT NULL, input_price REAL NOT NULL, output_price REAL NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, failures INTEGER NOT NULL DEFAULT 0, cooldown_until INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS policies (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, blocked_terms TEXT NOT NULL, redact_pii INTEGER NOT NULL, block_secrets INTEGER NOT NULL, created_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS virtual_keys (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, owner TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, prefix TEXT NOT NULL, models TEXT NOT NULL, policy_id TEXT REFERENCES policies(id), budget INTEGER, spent INTEGER NOT NULL DEFAULT 0, reserved INTEGER NOT NULL DEFAULT 0, rpm INTEGER NOT NULL, max_output INTEGER NOT NULL, expires_at TEXT, revoked INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS rate_windows (key_id TEXT NOT NULL, window INTEGER NOT NULL, requests INTEGER NOT NULL, PRIMARY KEY(key_id, window));
-      CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, key_id TEXT NOT NULL, key_name TEXT NOT NULL, model TEXT NOT NULL, deployment_id TEXT, status TEXT NOT NULL, http_status INTEGER NOT NULL, latency_ms INTEGER NOT NULL, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, cost INTEGER NOT NULL DEFAULT 0, estimated INTEGER NOT NULL DEFAULT 0, guardrail TEXT, attempts INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
-      CREATE INDEX IF NOT EXISTS request_workspace_time ON requests(workspace_id, created_at);
-      CREATE TABLE IF NOT EXISTS reservations (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, key_id TEXT NOT NULL REFERENCES virtual_keys(id), model TEXT NOT NULL, amount INTEGER NOT NULL, created_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS audit (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, created_at TEXT NOT NULL);
-    `);
-    if (Number(this.get('PRAGMA user_version')!.user_version) < 1) {
-      this.transaction(() => {
-        this.db.exec(`
-          ALTER TABLE virtual_keys ADD COLUMN token_limit INTEGER;
-          ALTER TABLE virtual_keys ADD COLUMN tpm INTEGER;
-          ALTER TABLE virtual_keys ADD COLUMN limit_period TEXT NOT NULL DEFAULT 'lifetime';
-          ALTER TABLE reservations ADD COLUMN token_amount INTEGER NOT NULL DEFAULT 0;
-          ALTER TABLE reservations ADD COLUMN minute_window INTEGER;
-          ALTER TABLE rate_windows ADD COLUMN tokens INTEGER NOT NULL DEFAULT 0;
-          CREATE TABLE usage_daily (key_id TEXT NOT NULL REFERENCES virtual_keys(id), day TEXT NOT NULL, cost INTEGER NOT NULL DEFAULT 0, tokens INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(key_id,day));
-          INSERT INTO usage_daily (key_id,day,cost,tokens)
-            SELECT r.key_id, substr(r.created_at,1,10), SUM(r.cost), SUM(r.input_tokens+r.output_tokens)
-            FROM requests r JOIN virtual_keys k ON k.id=r.key_id GROUP BY r.key_id,substr(r.created_at,1,10);
-          CREATE INDEX reservation_key_time ON reservations(key_id,created_at);
-          PRAGMA user_version=1;
-        `);
-      });
-    }
-    if (Number(this.get('PRAGMA user_version')!.user_version) < 2) {
-      this.transaction(() => {
-        this.db.exec(`
-          ALTER TABLE virtual_keys RENAME COLUMN max_output TO max_request_tokens;
-          ALTER TABLE virtual_keys ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
-          ALTER TABLE usage_daily ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0;
-          ALTER TABLE usage_daily ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0;
-          UPDATE usage_daily SET
-            input_tokens=COALESCE((SELECT SUM(r.input_tokens) FROM requests r WHERE r.key_id=usage_daily.key_id AND substr(r.created_at,1,10)=usage_daily.day),0),
-            output_tokens=COALESCE((SELECT SUM(r.output_tokens) FROM requests r WHERE r.key_id=usage_daily.key_id AND substr(r.created_at,1,10)=usage_daily.day),0);
-          PRAGMA user_version=2;
-        `);
-      });
-    }
-    if (Number(this.get('PRAGMA user_version')!.user_version) < 3) {
-      this.transaction(() => {
-        this.db.exec(`
-          ALTER TABLE policies ADD COLUMN pii_types TEXT NOT NULL DEFAULT '["email","us_ssn"]';
-          ALTER TABLE policies ADD COLUMN term_match TEXT NOT NULL DEFAULT 'substring';
-          PRAGMA user_version=3;
-        `);
-      });
+    this.lock = new DirectoryLock(directory);
+    try {
+      const path = join(directory, 'encryption.key');
+      if (!existsSync(path) && existsSync(join(directory, 'relay.sqlite'))) {
+        throw new Error('The database exists but its encryption key is missing. Restore the key from your backup.');
+      }
+      if (!existsSync(path)) writeFileSync(path, randomBytes(32), { mode: 0o600, flag: 'wx' });
+      this.encryptionKey = readFileSync(path);
+      if (this.encryptionKey.length !== 32) throw new Error('Invalid encryption key. Restore it from your backup.');
+      this.db = new DatabaseSync(join(directory, 'relay.sqlite'));
+      chmodSync(join(directory, 'relay.sqlite'), 0o600);
+      this.db.exec(`
+        PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
+        CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+        INSERT OR IGNORE INTO workspaces VALUES ('default', 'My workspace');
+        CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires_at INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS providers (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, base_url TEXT NOT NULL, secret TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS deployments (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider_id TEXT NOT NULL REFERENCES providers(id), alias TEXT NOT NULL, upstream_model TEXT NOT NULL, weight INTEGER NOT NULL, input_price REAL NOT NULL, output_price REAL NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, failures INTEGER NOT NULL DEFAULT 0, cooldown_until INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS policies (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, blocked_terms TEXT NOT NULL, redact_pii INTEGER NOT NULL, block_secrets INTEGER NOT NULL, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS virtual_keys (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, owner TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, prefix TEXT NOT NULL, models TEXT NOT NULL, policy_id TEXT REFERENCES policies(id), budget INTEGER, spent INTEGER NOT NULL DEFAULT 0, reserved INTEGER NOT NULL DEFAULT 0, rpm INTEGER NOT NULL, max_output INTEGER NOT NULL, expires_at TEXT, revoked INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS rate_windows (key_id TEXT NOT NULL, window INTEGER NOT NULL, requests INTEGER NOT NULL, PRIMARY KEY(key_id, window));
+        CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, key_id TEXT NOT NULL, key_name TEXT NOT NULL, model TEXT NOT NULL, deployment_id TEXT, status TEXT NOT NULL, http_status INTEGER NOT NULL, latency_ms INTEGER NOT NULL, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, cost INTEGER NOT NULL DEFAULT 0, estimated INTEGER NOT NULL DEFAULT 0, guardrail TEXT, attempts INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS request_workspace_time ON requests(workspace_id, created_at);
+        CREATE TABLE IF NOT EXISTS reservations (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, key_id TEXT NOT NULL REFERENCES virtual_keys(id), model TEXT NOT NULL, amount INTEGER NOT NULL, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS audit (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, created_at TEXT NOT NULL);
+      `);
+      if (Number(this.get('PRAGMA user_version')!.user_version) < 1) {
+        this.transaction(() => {
+          this.db.exec(`
+            ALTER TABLE virtual_keys ADD COLUMN token_limit INTEGER;
+            ALTER TABLE virtual_keys ADD COLUMN tpm INTEGER;
+            ALTER TABLE virtual_keys ADD COLUMN limit_period TEXT NOT NULL DEFAULT 'lifetime';
+            ALTER TABLE reservations ADD COLUMN token_amount INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE reservations ADD COLUMN minute_window INTEGER;
+            ALTER TABLE rate_windows ADD COLUMN tokens INTEGER NOT NULL DEFAULT 0;
+            CREATE TABLE usage_daily (key_id TEXT NOT NULL REFERENCES virtual_keys(id), day TEXT NOT NULL, cost INTEGER NOT NULL DEFAULT 0, tokens INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(key_id,day));
+            INSERT INTO usage_daily (key_id,day,cost,tokens)
+              SELECT r.key_id, substr(r.created_at,1,10), SUM(r.cost), SUM(r.input_tokens+r.output_tokens)
+              FROM requests r JOIN virtual_keys k ON k.id=r.key_id GROUP BY r.key_id,substr(r.created_at,1,10);
+            CREATE INDEX reservation_key_time ON reservations(key_id,created_at);
+            PRAGMA user_version=1;
+          `);
+        });
+      }
+      if (Number(this.get('PRAGMA user_version')!.user_version) < 2) {
+        this.transaction(() => {
+          this.db.exec(`
+            ALTER TABLE virtual_keys RENAME COLUMN max_output TO max_request_tokens;
+            ALTER TABLE virtual_keys ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
+            ALTER TABLE usage_daily ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE usage_daily ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0;
+            UPDATE usage_daily SET
+              input_tokens=COALESCE((SELECT SUM(r.input_tokens) FROM requests r WHERE r.key_id=usage_daily.key_id AND substr(r.created_at,1,10)=usage_daily.day),0),
+              output_tokens=COALESCE((SELECT SUM(r.output_tokens) FROM requests r WHERE r.key_id=usage_daily.key_id AND substr(r.created_at,1,10)=usage_daily.day),0);
+            PRAGMA user_version=2;
+          `);
+        });
+      }
+      if (Number(this.get('PRAGMA user_version')!.user_version) < 3) {
+        this.transaction(() => {
+          this.db.exec(`
+            ALTER TABLE policies ADD COLUMN pii_types TEXT NOT NULL DEFAULT '["email","us_ssn"]';
+            ALTER TABLE policies ADD COLUMN term_match TEXT NOT NULL DEFAULT 'substring';
+            PRAGMA user_version=3;
+          `);
+        });
+      }
+    } catch (error) {
+      this.db?.close();
+      this.lock.close();
+      throw error;
     }
   }
   all(sql: string, ...params: any[]): Row[] { return this.db.prepare(sql).all(...params) as Row[]; }
@@ -141,7 +140,15 @@ export class Store {
       this.run('DELETE FROM reservations');
     });
   }
-  close() { this.db.close(); if (existsSync(this.lockPath)) unlinkSync(this.lockPath); }
+  checkReady() {
+    if (this.closed || !this.get('SELECT id FROM workspaces WHERE id=?', 'default')) throw new Error('Storage is unavailable.');
+  }
+  close() {
+    if (this.closed) return;
+    this.db.close();
+    this.closed = true;
+    this.lock.close();
+  }
 }
 export const id = () => randomUUID();
 export const now = () => new Date().toISOString();

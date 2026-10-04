@@ -1,6 +1,6 @@
 # Installation
 
-GATE means Gateway for AI Traffic & Enforcement. The package name is `gate-llm`; the command is `gate-llm`. Version 0.2.0 is available as a public Docker image and [GitHub release downloads](https://github.com/younesh11/gate-llm/releases/tag/v0.2.0). Short-name installation from npm/PyPI is still pending.
+GATE means Gateway for AI Traffic & Enforcement. The package name is `gate-llm`; the command is `gate-llm`. Version 0.2.1 is available as a public Docker image and [GitHub release downloads](https://github.com/younesh11/gate-llm/releases/tag/v0.2.1). Short-name installation from npm/PyPI is still pending.
 
 ## Docker Compose (no Node or Python installation needed)
 
@@ -18,7 +18,7 @@ The container listens on 0.0.0.0 internally, while Compose publishes to host loo
 To use the published image instead of building locally:
 
 ```sh
-GATE_IMAGE=ghcr.io/younesh11/gate-llm:0.2.0 docker compose up -d --no-build --pull always
+GATE_IMAGE=ghcr.io/younesh11/gate-llm:0.2.1 docker compose up -d --no-build --pull always
 ```
 
 The image is public and supports Linux AMD64 and ARM64. No Docker Hub or GitHub account is needed to pull it. For reproducible deployment, pin a tested digest. The Dockerfile's NODE_IMAGE build argument can also pin the Node base image by digest.
@@ -29,12 +29,12 @@ Requires Node.js 22.13+; use Node.js 24 LTS.
 
 ```sh
 # Install the public GitHub release now:
-npm install -g https://github.com/younesh11/gate-llm/releases/download/v0.2.0/gate-llm-0.2.0.tgz
+npm install -g https://github.com/younesh11/gate-llm/releases/download/v0.2.1/gate-llm-0.2.1.tgz
 gate-llm serve --port 4310
 
 # Locally built release:
 npm run pack:release
-npm install -g ./artifacts/npm/gate-llm-0.2.0.tgz
+npm install -g ./artifacts/npm/gate-llm-0.2.1.tgz
 ```
 
 The npm archive includes compiled JavaScript, the dashboard and runtime dependencies. TypeScript and build tools are not required on the target machine. No install script starts a server or creates an account.
@@ -45,19 +45,19 @@ Requires Python 3.10+ and Node.js 22.13+ (24 LTS recommended). This is a launche
 
 ```sh
 # Install the public GitHub release, preferably in a virtual environment:
-python -m pip install https://github.com/younesh11/gate-llm/releases/download/v0.2.0/gate_llm-0.2.0-py3-none-any.whl
+python -m pip install https://github.com/younesh11/gate-llm/releases/download/v0.2.1/gate_llm-0.2.1-py3-none-any.whl
 gate-llm serve --port 4310
 
 # Alternatively, isolate the launcher:
-pipx install https://github.com/younesh11/gate-llm/releases/download/v0.2.0/gate_llm-0.2.0-py3-none-any.whl
+pipx install https://github.com/younesh11/gate-llm/releases/download/v0.2.1/gate_llm-0.2.1-py3-none-any.whl
 
 # Locally built wheel:
-python -m pip install ./artifacts/python/gate_llm-0.2.0-py3-none-any.whl
+python -m pip install ./artifacts/python/gate_llm-0.2.1-py3-none-any.whl
 ```
 
 Choose either pip or npm for the command in a given environment to avoid PATH ambiguity. The Python wrapper extracts a checksum-verified runtime to `~/.cache/gate-llm`; `GATE_RUNTIME_DIR` overrides the cache. Runtime cache and application data must remain separate.
 
-After registry publication, the short forms will be `npm install -g gate-llm@0.2.0` and `python -m pip install gate-llm==0.2.0`. Until then, use the verified release URLs above.
+After registry publication, the short forms will be `npm install -g gate-llm@0.2.1` and `python -m pip install gate-llm==0.2.1`. Until then, use the verified release URLs above.
 
 ## Source checkout
 

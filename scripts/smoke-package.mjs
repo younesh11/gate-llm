@@ -18,6 +18,7 @@ try {
     child.stderr.on('data', () => {});
   });
   assert.equal((await (await fetch(`${origin}/health`)).json()).version, manifest.version);
+  assert.equal((await (await fetch(`${origin}/ready`)).json()).status, 'ready');
   assert.equal((await (await fetch(`${origin}/api/session`)).json()).setup, true);
   const html = await (await fetch(origin)).text(); assert.ok(html.includes('id="root"'));
   const asset = html.match(/src="([^\"]+\.js)"/)[1]; assert.equal((await fetch(origin + asset)).status, 200);

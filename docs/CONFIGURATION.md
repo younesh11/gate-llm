@@ -10,11 +10,14 @@ CLI flags override environment variables. Existing environment variables take pr
 | COOKIE_SECURE | --secure-cookie | false | HTTPS-only session cookie |
 | ALLOW_PRIVATE_UPSTREAMS | --allow-private-upstreams | false | Permit local/private provider endpoints |
 | ALLOW_REMOTE_SETUP | --allow-remote-setup | false | Permit first-owner setup beyond loopback |
+| LOG_LEVEL | --log-level | info | Structured operational logs: silent, fatal, error, warn, info, debug or trace |
 | GATE_RUNTIME_DIR | — | ~/.cache/gate-llm | Python launcher's unpacked runtime cache only |
 | GATE_PORT | — | 4310 | Compose host port; distinct from container PORT |
-| GATE_IMAGE | — | gate-llm:0.2.0 | Compose image reference |
+| GATE_IMAGE | — | gate-llm:0.2.1 | Compose image reference |
 
 Boolean environment values must be exactly `true` to enable an option. CLI flags enable the corresponding option. `gate-llm --help` and `--version` do not start the server.
+
+See [operations](OPERATIONS.md) for readiness, request correlation, log privacy and crash recovery. Successful health probes are omitted from request logs; `silent` disables operational logging, including the startup address.
 
 A virtual key's daily/monthly/lifetime allowance is separate from its combined input + output maximum per request. Prices are USD per million tokens. Zero prices mean zero local spend, even when a provider charges you. The dashboard labels unreported usage as estimated/unsplit.
 

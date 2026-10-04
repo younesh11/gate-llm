@@ -2,8 +2,9 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { once } from 'node:events';
 import { lookup } from 'node:dns/promises';
 import { z } from 'zod';
-import { Store, HttpError, hash, id, now, type Row } from './store.ts';
+import { Store, HttpError, hash, now, type Row } from './store.ts';
 import { applyPolicy, GuardrailError, orderDeployments } from './guards.ts';
+import { safeError } from './operations.ts';
 
 const message = z.object({ role: z.enum(['system', 'developer', 'user', 'assistant', 'tool']), content: z.string().max(100_000).nullable(), name: z.string().optional(), tool_call_id: z.string().optional(), tool_calls: z.array(z.any()).max(64).optional() }).strict();
 const chatBody = z.object({
@@ -53,7 +54,7 @@ export function registerGateway(app: FastifyInstance, db: Store, options: { allo
   });
 
   app.post('/v1/chat/completions', async (request, reply) => {
-    const started = Date.now(), requestId = id(), key = authenticate(request);
+    const started = Date.now(), requestId = request.id, key = authenticate(request);
     let body = chatBody.parse(request.body);
     if (body.max_tokens && body.max_completion_tokens) throw new HttpError(400, 'Use only one output-token limit.');
     if (!(JSON.parse(key.models) as string[]).includes(body.model)) throw new HttpError(403, 'This key cannot access the requested model.', 'model_not_allowed');
@@ -103,13 +104,17 @@ export function registerGateway(app: FastifyInstance, db: Store, options: { allo
         cost = Math.ceil(usage.prompt_tokens * selected.input_price + usage.completion_tokens * selected.output_price);
         chargedTokens = usage.prompt_tokens + usage.completion_tokens;
       } else { usage = undefined; if (sentUpstream) { cost = reservation; chargedTokens = tokenReservation; estimated = 1; } }
-      db.transaction(() => {
+      try { db.transaction(() => {
         db.run('UPDATE virtual_keys SET reserved=MAX(0,reserved-?), spent=spent+? WHERE id=?', reservation, cost, key.id);
         db.run('UPDATE rate_windows SET tokens=MAX(0,tokens-?)+? WHERE key_id=? AND window=?', tokenReservation, chargedTokens, key.id, minuteWindow);
         db.recordUsage(key.id, admittedAt, cost, chargedTokens, usage?.prompt_tokens ?? 0, usage?.completion_tokens ?? 0);
         db.run('DELETE FROM reservations WHERE id=?', requestId);
         db.log({ id: requestId, workspace_id: key.workspace_id, key_id: key.id, key_name: key.name, model: body.model, deployment_id: selected?.id ?? null, status, http_status: statusCode, latency_ms: Date.now() - started, input_tokens: usage?.prompt_tokens ?? 0, output_tokens: usage?.completion_tokens ?? 0, cost, estimated, guardrail, attempts, created_at: admittedAt });
-      });
+      }); } catch (error) {
+        request.log.error({ event: 'gateway_settlement_failed', error: safeError(error) });
+        throw error;
+      }
+      request.log[status === 'success' ? 'info' : 'warn']({ event: 'gateway_request_settled', key_id: key.id, deployment_id: selected?.id ?? null, status, http_status: statusCode, attempts, duration_ms: Date.now() - started, tokens: chargedTokens, cost_microdollars: cost, estimated: !!estimated });
     };
     try {
       let response: Response | undefined;

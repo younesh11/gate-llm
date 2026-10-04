@@ -4,7 +4,7 @@
 
 A small, independent, self-hosted LLM gateway for you and your team. One endpoint for your models, a dashboard for your keys and usage, and limits enforced before requests reach a provider. Built with TypeScript, Fastify, React and SQLite; no LiteLLM dependency.
 
-**Version 0.2.0 · MIT license · Single instance**
+**Version 0.2.1 · MIT license · Single instance**
 
 ## Features
 
@@ -16,14 +16,16 @@ A small, independent, self-hosted LLM gateway for you and your team. One endpoin
 - **Playground and analytics:** streaming chat, token and spend breakdowns by key/member/application, request history and audit records.
 - **Team access:** owner/viewer accounts, hashed virtual keys and encrypted provider credentials.
 
-See [gateway behavior and limitations](docs/GATEWAY.md) for accounting, compatibility and security details. Native AWS Bedrock IAM/Converse, SSO, customer billing and multiple gateway replicas are not implemented in 0.2.0.
+Operational JSON logs, generated request IDs, database readiness and crash-released ownership are covered in [operations](docs/OPERATIONS.md). This is an internal beta; the first foundations increment does not establish full production readiness.
+
+See [gateway behavior and limitations](docs/GATEWAY.md) for accounting, compatibility and security details. Native AWS Bedrock IAM/Converse, SSO, customer billing and multiple gateway replicas are not implemented in 0.2.1.
 
 ## Start with Docker
 
 The public image supports Linux AMD64 and ARM64. From this source directory:
 
 ```sh
-GATE_IMAGE=ghcr.io/younesh11/gate-llm:0.2.0 docker compose up -d --no-build --pull always
+GATE_IMAGE=ghcr.io/younesh11/gate-llm:0.2.1 docker compose up -d --no-build --pull always
 ```
 
 To build the image yourself instead, run `docker compose up --build -d`.
@@ -32,14 +34,14 @@ Open **http://127.0.0.1:4310** and create your owner account. Data persists in a
 
 ## Install a release package
 
-The [v0.2.0 release](https://github.com/younesh11/gate-llm/releases/tag/v0.2.0) has public npm and Python downloads with checksums. You do not need a registry account to install them. Publication under the short `gate-llm` name on npm/PyPI is still pending.
+The [v0.2.1 release](https://github.com/younesh11/gate-llm/releases/tag/v0.2.1) has public npm and Python downloads with checksums. You do not need a registry account to install them. Publication under the short `gate-llm` name on npm/PyPI is still pending.
 
 ```sh
 # npm — Node.js 22.13+ required (24 LTS recommended)
-npm install -g https://github.com/younesh11/gate-llm/releases/download/v0.2.0/gate-llm-0.2.0.tgz
+npm install -g https://github.com/younesh11/gate-llm/releases/download/v0.2.1/gate-llm-0.2.1.tgz
 
 # Or pip, inside a virtual environment — Python 3.10+ AND Node.js required
-python -m pip install https://github.com/younesh11/gate-llm/releases/download/v0.2.0/gate_llm-0.2.0-py3-none-any.whl
+python -m pip install https://github.com/younesh11/gate-llm/releases/download/v0.2.1/gate_llm-0.2.1-py3-none-any.whl
 
 # Either installation provides the same command:
 gate-llm serve --port 4310

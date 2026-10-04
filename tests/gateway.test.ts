@@ -12,7 +12,8 @@ test('gateway integration and security boundaries', async t => {
   const mock = mockProvider();
   await new Promise<void>(resolve => mock.server.listen(0, '127.0.0.1', resolve));
   const address = mock.server.address() as { port: number };
-  const { app, db } = await createApp({ directory, allowPrivate: true, timeoutMs: 3000, random: () => 0 });
+  const operationalLogs: string[] = [];
+  const { app, db } = await createApp({ directory, allowPrivate: true, timeoutMs: 3000, random: () => 0, logDestination: { write: line => { operationalLogs.push(line); } } });
   t.after(async () => { await app.close(); await new Promise<void>(resolve => mock.server.close(() => resolve())); rmSync(directory, { recursive: true }); });
   const setup = await app.inject({ method: 'POST', url: '/api/setup', payload: { workspace: 'Test team', name: 'Owner', email: 'owner@example.test', password: 'test-password-long' } });
   assert.equal(setup.statusCode, 200, setup.body);
@@ -46,6 +47,11 @@ test('gateway integration and security boundaries', async t => {
     const response = await chat(key.token); assert.equal(response.statusCode, 200, response.body); assert.equal(response.json().model, 'chat');
     assert.equal(db.get('SELECT reserved FROM virtual_keys WHERE id=?', key.id)!.reserved, 0);
     assert.equal(db.get('SELECT spent FROM virtual_keys WHERE id=?', key.id)!.spent, 160);
+    const requestId = response.headers['x-request-id'];
+    const record = operationalLogs.map(line => JSON.parse(line)).find(row => row.event === 'gateway_request_settled' && row.request_id === requestId);
+    assert.equal(record.status, 'success'); assert.equal(record.tokens, 160);
+    assert.equal(db.get('SELECT id FROM requests WHERE id=?', requestId)!.id, requestId);
+    assert.ok(!operationalLogs.join('').includes(secret)); assert.ok(!operationalLogs.join('').includes(key.token));
   });
   await t.test('policies block before upstream and redact input without storing prompts', async () => {
     const before = mock.captured.length;
@@ -173,6 +179,8 @@ test('gateway integration and security boundaries', async t => {
     const response = await chat(k.token, { model: 'broken', stream: true });
     assert.ok(response.body.includes('stream_interrupted')); assert.ok(!response.body.includes('[DONE]'));
     const log = db.get('SELECT * FROM requests WHERE key_id=?', k.id)!; assert.equal(log.status, 'error'); assert.equal(log.estimated, 1);
+    const event = operationalLogs.map(line => JSON.parse(line)).find(row => row.event === 'gateway_request_settled' && row.request_id === response.headers['x-request-id']);
+    assert.equal(event.status, 'error'); assert.equal(event.http_status, 502); assert.equal(event.estimated, true);
   });
   await t.test('viewer role reads metadata but cannot mutate, and removal invalidates sessions', async () => {
     await create('users', { name: 'Viewer', email: 'viewer@example.test', password: 'viewer-password-long', role: 'viewer' });

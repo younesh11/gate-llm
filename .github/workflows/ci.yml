@@ -43,8 +43,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
       - run: docker compose build
       - run: docker compose up -d --wait
-      - run: curl --fail http://127.0.0.1:4310/health
+      - run: curl --fail http://127.0.0.1:4310/ready
+      - run: node scripts/smoke-docker.mjs
       - if: always()
         run: docker compose down -v

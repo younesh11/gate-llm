@@ -103,13 +103,14 @@ Totals come from the persistent daily ledger, including revoked keys, and surviv
 
 ## Storage, backup, and team access
 
-- Run **one gateway process per data directory**. A local PID lock guards accidental double-starts. SQLite transactions persist budgets, reservations, rate counters, users, sessions and configuration; there is no in-memory-only budget store.
+- Run **one gateway process per data directory**. An exclusive transaction on `process-lock.sqlite` guards accidental double-starts; the operating system releases it when the owner exits, including an abrupt kill. Never remove the lock database while an instance is running. SQLite transactions persist budgets, reservations, rate counters, users, sessions and configuration; there is no in-memory-only budget store.
 - The storage directory contains `relay.sqlite`, its WAL files, and `encryption.key`. Keep the whole directory private. The encryption key is stored locally, separate from ciphertext, and is not a managed KMS. Anyone who can read both can decrypt provider credentials.
 - Stop the service for a consistent filesystem backup of the entire data directory. Restore the database and its original encryption key together. Missing keys are not silently regenerated for an existing database.
 - Dashboard passwords are salted with scrypt. Sessions are hashed, expire after 12 hours, and use HttpOnly/SameSite=Strict cookies. Mutation requests with a foreign Origin are rejected. Login attempts are limited per client IP. This is not a substitute for perimeter protections on a public deployment.
 - Before inviting your team, configure the first owner locally, put the service behind HTTPS, set `COOKIE_SECURE=true`, and keep the admin interface on a trusted network. Preserve the external Host header in your reverse proxy and support SSE without buffering. To bind a direct LAN interface, set `HOST` intentionally; do not publish the demo.
 - Each person should receive their own dashboard account. Virtual keys never grant administrative access. Removing a member ends dashboard sessions; separately revoke keys issued to that member.
 - Request logs do not store prompt/response bodies or authorization headers. Audit records are append-only through the application API, but are not cryptographically tamper-proof against a host administrator. Retention/export automation is not implemented yet.
+- Structured operational logs use generated request IDs and selected metadata only. `/health` is liveness; `/ready` additionally queries the database and returns 503 if it cannot serve that check. It does not call providers or prove storage capacity. See [operations](OPERATIONS.md).
 - Provider URLs are an owner-controlled configuration surface. Public upstreams require HTTPS and are checked for private-address resolution; redirects are rejected. Private access is an explicit opt-in for trusted local models. Use network egress rules before exposing this to untrusted tenants; this is not a hardened multi-tenant SSRF boundary.
 
 
