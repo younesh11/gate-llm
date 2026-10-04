@@ -9,5 +9,5 @@ for (const file of files) {
   if (!/^package\/(build\/|dist\/|docs\/|node_modules\/|package.json$|README.md$|LICENSE$|CHANGELOG.md$)/.test(file)) throw new Error(`Unexpected packaged file: ${file}`);
   if (/(^|\/)(\.env(?:\.[^/]*)?|data|\.git|\.npmrc|encryption\.key|process\.lock)(\/|$)|\.sqlite(?:-|$|\.)/.test(file)) throw new Error(`Private file in package: ${file}`);
 }
-for (const file of ['package/build/cli.js', 'package/build/app.js', 'package/dist/index.html', 'package/LICENSE', 'package/node_modules/fastify/fastify.js']) if (!files.includes(file)) throw new Error(`Missing release file: ${file}`);
+for (const file of ['package/build/cli.js', 'package/build/app.js', 'package/build/upstream.js', 'package/build/token-counting.js', 'package/dist/index.html', 'package/LICENSE', 'package/node_modules/fastify/fastify.js', 'package/node_modules/undici/index.js']) if (!files.includes(file)) throw new Error(`Missing release file: ${file}`);
 console.log(`Package checked: ${files.length} files; compiled server, UI, bundled runtime dependencies, no local state.`);

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { createApp } from '../server/app.ts';
-import { Store, passwordMatches } from '../server/store.ts';
+import { Store, passwordMatches, schemaVersion } from '../server/store.ts';
 import { backupState, verifyBackup, restoreState, resetPassword, backupManifestFile, restoreMarkerFile } from '../server/maintenance.ts';
 
 async function fixture(directory: string) {
@@ -19,7 +19,7 @@ async function fixture(directory: string) {
       const response = await app.inject({ method: 'POST', url: `/api/admin/${path}`, headers: { cookie }, payload });
       assert.equal(response.statusCode, 200, response.body); return response.json();
     };
-    const provider = await create('providers', { name: 'Synthetic provider', base_url: 'https://example.com/v1', api_key: 'synthetic-provider-secret' });
+    const provider = await create('providers', { name: 'Synthetic provider', base_url: 'https://example.com/v1', api_key: 'synthetic-provider-secret', token_counting: 'vllm' });
     await create('deployments', { provider_id: provider.id, alias: 'chat', upstream_model: 'synthetic-model', weight: 1, input_price: 0.2, output_price: 0.3 });
     const policy = await create('policies', { name: 'Secret protection', blocked_terms: ['private'], block_secrets: true, redact_pii: true });
     const key = await create('keys', { name: 'Recovery key', owner: 'Test', models: ['chat'], policy_id: policy.id, budget: 20, token_limit: 10000, rpm: 60, max_request_tokens: 2000 });
@@ -40,7 +40,7 @@ test('backup/restore retains configuration, credentials, usage and pending reser
   const source = join(root, 'source'), backup = join(root, 'snapshot'), destination = join(root, 'restored');
   const { cookie, provider, policy, key } = await fixture(source);
   assert.equal(backupState(source, backup).status, 'backup_created');
-  assert.equal(verifyBackup(backup).schema_version, 3);
+  assert.equal(verifyBackup(backup).schema_version, schemaVersion);
   assert.deepEqual(readdirSync(backup).sort(), [backupManifestFile, 'encryption.key', 'relay.sqlite'].sort());
   if (process.platform !== 'win32') {
     assert.equal(statSync(backup).mode & 0o777, 0o700);
@@ -62,6 +62,7 @@ test('backup/restore retains configuration, credentials, usage and pending reser
     assert.equal(restored.policy_id, policy.id);
     assert.equal(db.get('SELECT block_secrets FROM policies WHERE id=?', policy.id)!.block_secrets, 1);
     assert.equal(db.unseal(db.get('SELECT secret FROM providers WHERE id=?', provider.id)!.secret), 'synthetic-provider-secret');
+    assert.equal(db.get('SELECT token_counting FROM providers WHERE id=?', provider.id)!.token_counting, 'vllm');
     assert.equal(db.get('SELECT COUNT(*) AS n FROM audit WHERE action=?', 'backup.restore')!.n, 1);
     db.recoverReservations();
     assert.equal(db.get('SELECT spent FROM virtual_keys WHERE id=?', key.id)!.spent, 300);
@@ -185,6 +186,50 @@ test('a restore failure leaves a persistent startup block and preserves the back
   assert.throws(() => new Store(destination), /Restore is incomplete/);
   assert.throws(() => restoreState(backup, destination), /EEXIST/);
   verifyBackup(backup);
+});
+
+test('keyless providers work with backup, restore and password recovery alongside encrypted providers', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'gate-keyless-recovery-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = join(root, 'source'), backup = join(root, 'backup'), destination = join(root, 'restored');
+  const { provider } = await fixture(source);
+  const db = new Store(source);
+  db.run('INSERT INTO providers (id,workspace_id,name,base_url,secret,enabled,created_at) VALUES (?,?,?,?,?,?,?)', 'keyless', 'default', 'Local model without credentials', 'http://127.0.0.1:9999/v1', '', 1, new Date().toISOString());
+  db.close();
+  assert.equal(backupState(source, backup).status, 'backup_created');
+  verifyBackup(backup);
+  restoreState(backup, destination);
+  assert.equal(resetPassword(destination, 'owner@example.test', 'replacement-keyless-password').status, 'password_reset');
+  const restored = new Store(destination);
+  try {
+    assert.equal(restored.get('SELECT secret FROM providers WHERE id=?', 'keyless')!.secret, '');
+    assert.equal(restored.unseal(restored.get('SELECT secret FROM providers WHERE id=?', provider.id)!.secret), 'synthetic-provider-secret');
+    const corrupted = Buffer.from(restored.get('SELECT secret FROM providers WHERE id=?', provider.id)!.secret, 'base64');
+    corrupted[12] ^= 1;
+    restored.run('UPDATE providers SET secret=? WHERE id=?', corrupted.toString('base64'), provider.id);
+  } finally { restored.close(); }
+  assert.throws(() => backupState(destination, join(root, 'corrupt')), /cannot decrypt/);
+});
+
+test('schema 3 backups stay verifiable and migrate only after restoring and starting the copy', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'gate-schema3-backup-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = join(root, 'source'), backup = join(root, 'backup'), destination = join(root, 'restored');
+  const { provider } = await fixture(source);
+  const old = new Store(source);
+  old.db.exec('ALTER TABLE providers DROP COLUMN token_counting; PRAGMA user_version=3;'); old.close();
+  assert.equal(backupState(source, backup).schema_version, 3);
+  assert.equal(verifyBackup(backup).schema_version, 3);
+  restoreState(backup, destination);
+  const restored = new Store(destination);
+  try {
+    assert.equal(restored.get('PRAGMA user_version')!.user_version, schemaVersion);
+    assert.equal(restored.get('SELECT token_counting FROM providers WHERE id=?', provider.id)!.token_counting, 'estimate');
+  } finally { restored.close(); }
+  assert.equal(verifyBackup(backup).schema_version, 3);
+  const manifestPath = join(backup, backupManifestFile), manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  manifest.schema_version = schemaVersion; writeFileSync(manifestPath, JSON.stringify(manifest));
+  assert.throws(() => verifyBackup(backup), /schema does not match/);
 });
 
 test('CLI stdin recovery never prints the password and rejects accidental noninteractive or multiline input', async t => {

@@ -50,6 +50,7 @@ jobs:
         run: |
           node --input-type=module -e 'import fs from "node:fs"; import {execFileSync} from "node:child_process"; const v=JSON.parse(fs.readFileSync("package.json")).version; const tag=process.env.RELEASE_TAG; if(!/^v\d+\.\d+\.\d+$/.test(tag)||tag!==`v${v}`) throw Error("Tag/version mismatch"); const tagged=execFileSync("git",["rev-parse",`refs/tags/${tag}^{commit}`],{encoding:"utf8"}); const head=execFileSync("git",["rev-parse","HEAD"],{encoding:"utf8"}); if(tagged!==head) throw Error("Checkout is not the tagged commit"); fs.appendFileSync(process.env.GITHUB_ENV,`RELEASE_VERSION=${v}\nRELEASE_REVISION=${head.trim()}\nRELEASE_MINOR=${v.split(".").slice(0,2).join(".")}\nIMAGE_NAME=ghcr.io/${process.env.GITHUB_REPOSITORY.toLowerCase()}\n`);'
       - run: npm ci
+      - run: npm audit --audit-level=high
       - run: npm test
       - run: npm run test:python
       - run: npm run check:version

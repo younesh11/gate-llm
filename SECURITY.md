@@ -2,6 +2,8 @@
 
 Use the latest 0.2.x patch release. This project is an internal beta and has not undergone an independent security audit.
 
+The current source includes security fixes that are not in the published v0.2.2 artifacts. See the [2026-10-04 source review](docs/SECURITY_REVIEW.md) and the Unreleased changelog. A Git push alone does not update installed packages or containers.
+
 Report vulnerabilities privately to the repository owner. If GitHub private vulnerability reporting is available, use the repository's Security → Advisories page. Otherwise request a private reporting channel without posting credentials or exploit details publicly.
 
 Operational boundaries:
@@ -12,9 +14,9 @@ Operational boundaries:
 - Offline backups contain that same key. Private POSIX permissions and checksums do not encrypt or authenticate a backup. Use encrypted private storage and restore only trusted snapshots; see [recovery](docs/RECOVERY.md).
 - Local password recovery requires access to stopped state, invalidates the selected account's sessions and records an audit event. Restores invalidate all saved browser sessions, but can roll back virtual-key revocations and usage to the snapshot time.
 - Virtual keys grant model access; administrative sessions grant dashboard access. Assign the owner role only to trusted operators.
-- Allow private upstream URLs only when trusted administrators control provider configuration.
+- Allow private upstream URLs only when trusted administrators control provider configuration. DNS results are checked on the actual connection, including mapped IPv6 addresses; known cloud metadata endpoints remain blocked with private access enabled. Keep network-level egress restrictions as another layer.
 - Guardrails match selected input patterns. They are not comprehensive moderation or prompt-injection defenses.
-- Token admission uses a conservative estimate. Provider tokenization, pricing and usage reporting can differ.
+- Token admission uses a conservative estimate by default, or an explicitly selected provider tokenizer for supported text chats. Provider tokenization, pricing and usage reporting can differ.
 - Demo credentials are public and belong only in the isolated demo.
 
 Release packaging uses explicit file lists, dependency locks, artifact checksums and package-content checks. Python extraction rejects paths outside the package and all links/special files. Containers run as a non-root user; Compose uses a read-only root filesystem and a writable named data volume.

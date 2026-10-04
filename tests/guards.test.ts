@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { applyPolicy, inspectPolicy, GuardrailError } from '../server/guards.ts';
-import { Store, HttpError, now } from '../server/store.ts';
+import { Store, HttpError, now, schemaVersion } from '../server/store.ts';
 
 const baseline = { blocked_terms: [], block_secrets: true, redact_pii: true };
 const body = (content: string) => ({ model: 'chat', messages: [{ role: 'user', content }] });
@@ -73,13 +73,13 @@ test('schema 2 policies migrate with their existing choices and assignments inta
   try {
     db.run('INSERT INTO policies (id,workspace_id,name,blocked_terms,redact_pii,block_secrets,created_at) VALUES (?,?,?,?,?,?,?)', 'old-policy', 'default', 'Old policy', '["term"]', 0, 1, now());
     db.run('INSERT INTO virtual_keys (id,workspace_id,name,owner,token_hash,prefix,models,policy_id,rpm,max_request_tokens,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)', 'old-key', 'default', 'Old key', 'Team', 'hash', 'rk_old', '["chat"]', 'old-policy', 60, 8192, now());
-    db.db.exec('ALTER TABLE policies DROP COLUMN pii_types; ALTER TABLE policies DROP COLUMN term_match; PRAGMA user_version=2;');
+    db.db.exec('ALTER TABLE policies DROP COLUMN pii_types; ALTER TABLE policies DROP COLUMN term_match; ALTER TABLE providers DROP COLUMN token_counting; PRAGMA user_version=2;');
     db.close(); db = new Store(directory);
     const policy = db.get('SELECT * FROM policies WHERE id=?', 'old-policy')!;
     assert.equal(policy.blocked_terms, '["term"]'); assert.equal(policy.redact_pii, 0); assert.equal(policy.block_secrets, 1);
     assert.deepEqual(JSON.parse(policy.pii_types), ['email', 'us_ssn']); assert.equal(policy.term_match, 'substring');
     assert.equal(db.get('SELECT policy_id FROM virtual_keys WHERE id=?', 'old-key')!.policy_id, 'old-policy');
-    assert.equal(db.get('PRAGMA user_version')!.user_version, 3);
+    assert.equal(db.get('PRAGMA user_version')!.user_version, schemaVersion);
     db.close(); db = new Store(directory);
     assert.equal(db.get('SELECT COUNT(*) AS count FROM policies')!.count, 1);
   } finally { db.close(); rmSync(directory, { recursive: true }); }

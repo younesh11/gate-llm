@@ -23,4 +23,8 @@ See [operations](OPERATIONS.md) for readiness, request correlation, log privacy 
 
 A virtual key's daily/monthly/lifetime allowance is separate from its combined input + output maximum per request. Prices are USD per million tokens. Zero prices mean zero local spend, even when a provider charges you. The dashboard labels unreported usage as estimated/unsplit.
 
+Local-only first-owner setup requires both a loopback connection and a Host of `localhost`, `127.0.0.1` or `[::1]` (with an optional port). Use that local address when setting up the gateway. Remote setup remains an explicit opt-in; restrict access while creating the first owner. Dashboard origin checks include the scheme: when TLS ends at a reverse proxy, set `COOKIE_SECURE=true` and preserve the external Host header.
+
+`ALLOW_PRIVATE_UPSTREAMS` does not allow known cloud metadata endpoints. Name resolution is checked when saving providers and on the actual outgoing socket for generation and tokenization, including when private models are enabled.
+
 Model access uses aliases configured in Models & routing. Every deployment under the same alias is eligible for its weighted share while enabled and outside cooldown. A key must explicitly allow the alias. Bedrock models that require Converse/IAM cannot be configured as ordinary compatible endpoints in this release.

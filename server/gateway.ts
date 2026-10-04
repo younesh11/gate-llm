@@ -1,10 +1,12 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { once } from 'node:events';
-import { lookup } from 'node:dns/promises';
 import { z } from 'zod';
 import { Store, HttpError, hash, now, type Row } from './store.ts';
 import { applyPolicy, GuardrailError, orderDeployments } from './guards.ts';
 import { safeError } from './operations.ts';
+import { canCountText, countVllmInput, estimateInputTokens } from './token-counting.ts';
+import { createUpstreamClient, type UpstreamFetch } from './upstream.ts';
+export { isPrivateAddress, validateUpstream } from './upstream.ts';
 
 const message = z.object({ role: z.enum(['system', 'developer', 'user', 'assistant', 'tool']), content: z.string().max(100_000).nullable(), name: z.string().optional(), tool_call_id: z.string().optional(), tool_calls: z.array(z.any()).max(64).optional() }).strict();
 const chatBody = z.object({
@@ -18,28 +20,10 @@ const chatBody = z.object({
   stream_options: z.object({ include_usage: z.boolean().optional() }).optional(), n: z.literal(1).optional()
 }).strict();
 
-export function isPrivateAddress(address: string) {
-  const value = address.toLowerCase().replace(/^\[|\]$/g, '').replace(/^::ffff:/, '');
-  if (value.includes(':')) return value === '::1' || value === '::' || /^(fc|fd|fe[89ab])/.test(value) || value.startsWith('2001:db8');
-  const p = value.split('.').map(Number);
-  return p[0] === 0 || p[0] === 10 || p[0] === 127 || p[0] >= 224 || (p[0] === 169 && p[1] === 254) || (p[0] === 172 && p[1] >= 16 && p[1] <= 31) || (p[0] === 192 && p[1] === 168) || (p[0] === 100 && p[1] >= 64 && p[1] <= 127) || (p[0] === 198 && [18, 19].includes(p[1]));
-}
-export async function validateUpstream(url: string, allowPrivate: boolean) {
-  let parsed: URL;
-  try { parsed = new URL(url); } catch { throw new HttpError(400, 'Enter an absolute provider URL.'); }
-  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) throw new HttpError(400, 'Use an HTTP(S) URL without credentials, query strings or fragments.');
-  const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
-  if (hostname === 'metadata.google.internal' || hostname === '169.254.169.254') throw new HttpError(400, 'Cloud metadata endpoints cannot be used as providers.');
-  if (!allowPrivate) {
-    if (parsed.protocol !== 'https:') throw new HttpError(400, 'Public upstreams must use HTTPS. Set ALLOW_PRIVATE_UPSTREAMS for a trusted local model.');
-    let addresses;
-    try { addresses = await lookup(hostname, { all: true }); } catch { throw new HttpError(400, 'Provider hostname could not be resolved.'); }
-    if (!addresses.length || addresses.some(row => isPrivateAddress(row.address))) throw new HttpError(400, 'Private upstreams require ALLOW_PRIVATE_UPSTREAMS=true.');
-  }
-  return parsed.toString().replace(/\/$/, '');
-}
-
 export function registerGateway(app: FastifyInstance, db: Store, options: { allowPrivate: boolean; timeoutMs?: number; random?: () => number }) {
+  const upstream = createUpstreamClient(options.allowPrivate);
+  app.addHook('onClose', async () => { await upstream.close(); });
+  const counting = new Map<string, { window: number; calls: number; active: number }>();
   const authenticate = (request: FastifyRequest): Row => {
     const authorization = request.headers.authorization;
     if (!authorization?.startsWith('Bearer ')) throw new HttpError(401, 'A virtual API key is required.', 'invalid_api_key');
@@ -65,21 +49,47 @@ export function registerGateway(app: FastifyInstance, db: Store, options: { allo
       if (error instanceof GuardrailError) db.log({ id: requestId, workspace_id: key.workspace_id, key_id: key.id, key_name: key.name, model: body.model, status: 'blocked', http_status: 422, latency_ms: Date.now() - started, guardrail: error.result });
       throw error;
     }
-    const candidates = db.all('SELECT d.*, p.base_url, p.secret FROM deployments d JOIN providers p ON p.id=d.provider_id WHERE d.workspace_id=? AND d.alias=? AND d.enabled=1 AND p.enabled=1 AND d.cooldown_until<=?', key.workspace_id, body.model, Date.now());
+    const candidates = orderDeployments(db.all('SELECT d.*, p.base_url, p.secret, p.token_counting FROM deployments d JOIN providers p ON p.id=d.provider_id WHERE d.workspace_id=? AND d.alias=? AND d.enabled=1 AND p.enabled=1 AND d.cooldown_until<=?', key.workspace_id, body.model, Date.now()), options.random).slice(0, 3);
     if (!candidates.length) throw new HttpError(503, 'No available deployment for this model.', 'no_deployments');
     const totalLimit = body.max_total_tokens ?? key.max_request_tokens;
     if (totalLimit > key.max_request_tokens) throw new HttpError(400, `This key allows up to ${key.max_request_tokens} combined input + output tokens per request.`, 'request_token_limit_exceeded');
-    // Text-only endpoint: reserve a deliberately conservative byte-based input estimate.
-    // This is a budget control, not a provider billing guarantee. Missing usage retains the reservation.
-    const inputEstimate = Buffer.byteLength(JSON.stringify(body)) + 128 * body.messages.length + 1024;
+    const canCount = canCountText(body), estimate = estimateInputTokens(body);
+    const exact = canCount && candidates.every(row => row.token_counting === 'vllm');
+    let inputEstimate = estimate;
+    if (canCount && candidates.some(row => row.token_counting === 'vllm')) {
+      // Counting happens after guardrails, before generation reservations. Bound this
+      // unbilled work separately so rejected requests cannot hammer the tokenizer.
+      const window = Math.floor(Date.now() / 60000);
+      for (const [id, entry] of counting) if (entry.window !== window && !entry.active) counting.delete(id);
+      const entry = counting.get(key.id) ?? { window, calls: 0, active: 0 };
+      if (entry.window !== window) { entry.window = window; entry.calls = 0; }
+      if (entry.active >= 8 || entry.calls >= key.rpm) throw new HttpError(429, 'Token-counting request limit reached. Wait before trying again.', 'token_count_rate_limit');
+      entry.calls++; entry.active++; counting.set(key.id, entry);
+      const controller = new AbortController(), onClose = () => controller.abort();
+      const timer = setTimeout(() => controller.abort(), Math.min(options.timeoutMs ?? 5000, 5000));
+      reply.raw.on('close', onClose);
+      try {
+        const inputs = await Promise.all(candidates.map(async row => {
+          if (row.token_counting !== 'vllm') return estimate;
+          return countVllmInput(row, body, row.secret ? db.unseal(row.secret) : undefined, controller.signal, upstream.fetch);
+        }));
+        inputEstimate = Math.max(...inputs);
+      } finally {
+        controller.abort(); clearTimeout(timer); reply.raw.off('close', onClose); entry.active--;
+      }
+    }
     const remainingOutput = totalLimit - inputEstimate;
+    const inputLabel = exact ? 'Counted input' : 'Estimated input';
+    if (remainingOutput < 1) throw new HttpError(400, `${inputLabel} (${inputEstimate}) leaves no room for output within the ${totalLimit} combined-token limit. Shorten the conversation or increase the request limit.${exact ? '' : ' This is a conservative estimate; a supported provider tokenizer can give a more accurate count.'}`, 'request_token_limit_exceeded');
     const maxOutput = body.max_completion_tokens ?? body.max_tokens ?? Math.min(remainingOutput, body.max_total_tokens ? 32768 : 1024);
-    if (remainingOutput < 1 || maxOutput > remainingOutput) throw new HttpError(400, `Estimated input (${inputEstimate}) plus requested output (${Math.max(0, maxOutput)}) exceeds the ${totalLimit} total tokens per request. Shorten the input or lower the requested output.`, 'request_token_limit_exceeded');
+    if (maxOutput > remainingOutput) throw new HttpError(400, `${inputLabel} (${inputEstimate}) plus requested output (${maxOutput}) exceeds the ${totalLimit} combined-token limit. Reduce the output limit to ${remainingOutput} or shorten the conversation.`, 'request_token_limit_exceeded');
     const reservation = Math.ceil(Math.max(...candidates.map(row => inputEstimate * row.input_price + maxOutput * row.output_price)));
     const tokenReservation = inputEstimate + maxOutput;
     const admittedAt = now(), minuteWindow = Math.floor(Date.parse(admittedAt) / 60000);
     db.transaction(() => {
-      const current = db.get('SELECT * FROM virtual_keys WHERE id=?', key.id)!;
+      const current = authenticate(request);
+      if (!(JSON.parse(current.models) as string[]).includes(body.model)) throw new HttpError(403, 'This key cannot access the requested model.', 'model_not_allowed');
+      if (totalLimit > current.max_request_tokens) throw new HttpError(400, 'The key request limit changed. Retry with a lower combined-token limit.', 'request_token_limit_exceeded');
       const allocation = db.limitSummary(current, Date.parse(admittedAt));
       if (current.budget !== null && allocation.period_spent + allocation.money_reserved + reservation > current.budget) throw new HttpError(429, 'Key budget cannot cover this request. Reduce the output limit or increase the budget.', 'budget_exceeded');
       if (current.token_limit !== null && allocation.tokens_used + allocation.tokens_reserved + tokenReservation > current.token_limit) throw new HttpError(429, 'Token allowance cannot cover this request. Reduce the prompt/output limit, increase the allowance, or wait for its reset.', 'token_quota_exceeded');
@@ -117,16 +127,15 @@ export function registerGateway(app: FastifyInstance, db: Store, options: { allo
       request.log[status === 'success' ? 'info' : 'warn']({ event: 'gateway_request_settled', key_id: key.id, deployment_id: selected?.id ?? null, status, http_status: statusCode, attempts, duration_ms: Date.now() - started, tokens: chargedTokens, cost_microdollars: cost, estimated: !!estimated });
     };
     try {
-      let response: Response | undefined;
-      for (const deployment of orderDeployments(candidates, options.random).slice(0, 3)) {
+      let response: Awaited<ReturnType<UpstreamFetch>> | undefined;
+      for (const deployment of candidates) {
         selected = deployment;
-        await validateUpstream(deployment.base_url, options.allowPrivate);
         attempts++;
         const { max_total_tokens: _totalLimit, ...upstreamBody } = body;
         const payload: any = { ...upstreamBody, model: deployment.upstream_model, ...(body.max_completion_tokens ? { max_completion_tokens: maxOutput } : { max_tokens: maxOutput }) };
         if (body.stream) payload.stream_options = { include_usage: true };
         sentUpstream = true;
-        response = await fetch(`${deployment.base_url}/chat/completions`, {
+        response = await upstream.fetch(`${deployment.base_url}/chat/completions`, {
           method: 'POST', redirect: 'error', signal: controller.signal,
           headers: { 'Content-Type': 'application/json', ...(deployment.secret ? { Authorization: `Bearer ${db.unseal(deployment.secret)}` } : {}) },
           body: JSON.stringify(payload)

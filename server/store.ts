@@ -5,7 +5,7 @@ import { randomBytes, randomUUID, createHash, createCipheriv, createDecipheriv, 
 import { DirectoryLock } from './directory-lock.ts';
 
 export type Row = Record<string, any>;
-export const schemaVersion = 3;
+export const schemaVersion = 4;
 export class Store {
   db!: DatabaseSync;
   encryptionKey: Buffer;
@@ -84,6 +84,11 @@ export class Store {
             ALTER TABLE policies ADD COLUMN term_match TEXT NOT NULL DEFAULT 'substring';
             PRAGMA user_version=3;
           `);
+        });
+      }
+      if (Number(this.get('PRAGMA user_version')!.user_version) < 4) {
+        this.transaction(() => {
+          this.db.exec("ALTER TABLE providers ADD COLUMN token_counting TEXT NOT NULL DEFAULT 'estimate' CHECK(token_counting IN ('estimate','vllm')); PRAGMA user_version=4;");
         });
       }
     } catch (error) {

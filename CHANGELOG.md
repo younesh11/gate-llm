@@ -4,7 +4,15 @@ This project uses Semantic Versioning. Dates use YYYY-MM-DD.
 
 ## [Unreleased]
 
-No unreleased changes.
+- Enforce dashboard permissions and origin checks using the matched route, including percent-encoded paths. Require a localhost Host header as well as a loopback peer for local-only first-owner setup.
+- Validate upstream DNS answers at socket connection time for both generation and token counting. Reject alternate private IPv4/IPv6 forms, known cloud metadata addresses and metadata DNS aliases; retain trusted private-model opt-in and reject redirects.
+- Bound email PII matching to prevent adversarial long text from stalling the gateway. Add authorization, DNS-rebinding, metadata, redirect and inspection-work regression tests.
+- Gate CI and release packaging on npm's high/critical vulnerability check; bundle the guarded HTTP client in npm/Python distributions.
+- Add opt-in vLLM input token counting for text chat, so small combined input/output limits use the configured model's chat tokenizer. Bound counting requests, apply guardrails before counting, fail closed on tokenizer errors, and preserve atomic budget/token reservations across streaming and fallback.
+- Migrate providers to schema 4 with conservative estimates retained by default. Maintenance supports schema 3 and 4 snapshots, preserving older backups until a restored copy starts and migrates.
+- Explain input-only limit failures without reporting a misleading requested output of zero.
+- Fix backup verification, restore and password recovery for installations containing providers without API keys. Continue verifying all nonempty encrypted credentials, including when keyed and keyless providers coexist.
+- Keep virtual-key editing controls visible beside each key as the table scrolls. Add an explicit Edit settings label and explain why revoked keys are locked.
 
 ## [0.2.2] - 2026-10-04
 

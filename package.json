@@ -26,6 +26,7 @@
     "@fastify/cookie": "^11.0.2",
     "@fastify/static": "^10.1.5",
     "fastify": "^5.12.5",
+    "undici": "^7.30.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {
@@ -33,12 +34,12 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
-    "typescript": "^5.7.3",
-    "vite": "^6.1.0",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "tsx": "^4.20.0"
+    "tsx": "^4.20.0",
+    "typescript": "^5.7.3",
+    "vite": "^6.1.0"
   },
   "description": "A self-hosted LLM gateway with virtual keys, quotas, guardrails, routing, and a team dashboard.",
   "license": "MIT",
@@ -67,7 +68,8 @@
     "@fastify/cookie",
     "@fastify/static",
     "fastify",
-    "zod"
+    "zod",
+    "undici"
   ],
   "repository": {
     "type": "git",

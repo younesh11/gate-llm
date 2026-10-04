@@ -13,7 +13,7 @@ export const restoreMarkerFile = 'restore.incomplete';
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const manifestSchema = z.object({
   format: z.literal('gate-backup'), format_version: z.literal(1),
-  gate_version: z.string().max(50), schema_version: z.literal(schemaVersion), created_at: z.string().datetime(),
+  gate_version: z.string().max(50), schema_version: z.number().int().min(3).max(schemaVersion), created_at: z.string().datetime(),
   files: z.object({ 'relay.sqlite': digest, 'encryption.key': digest }).strict(),
 }).strict();
 
@@ -59,7 +59,9 @@ function keyAt(directory: string) {
   return readFileSync(join(directory, keyFile));
 }
 function inspectDatabase(db: DatabaseSync, key: Buffer) {
-  if (db.prepare('PRAGMA user_version').get()!.user_version !== schemaVersion) throw new Error('Unsupported database schema. Use the matching GATE release.');
+  const actualSchema = Number(db.prepare('PRAGMA user_version').get()!.user_version);
+  if (actualSchema < 3 || actualSchema > schemaVersion) throw new Error('Unsupported database schema. Use the matching GATE release.');
+  if (actualSchema >= 4) db.prepare('SELECT token_counting FROM providers LIMIT 1').get();
   const integrity = db.prepare('PRAGMA integrity_check').all();
   if (integrity.length !== 1 || integrity[0].integrity_check !== 'ok' || db.prepare('PRAGMA foreign_key_check').all().length) {
     throw new Error('Database integrity check failed.');
@@ -70,7 +72,8 @@ function inspectDatabase(db: DatabaseSync, key: Buffer) {
     db.prepare(`SELECT COUNT(*) FROM ${table}`).get();
   }
   try {
-    for (const row of db.prepare('SELECT secret FROM providers').all()) {
+    // Local/OpenAI-compatible providers may deliberately have no API key.
+    for (const row of db.prepare("SELECT secret FROM providers WHERE secret<>''").all()) {
       const data = Buffer.from(String(row.secret), 'base64');
       const decipher = createDecipheriv('aes-256-gcm', key, data.subarray(0, 12));
       decipher.setAuthTag(data.subarray(-16));
@@ -111,6 +114,7 @@ export function verifyBackup(path: string) {
   const key = keyAt(directory), db = new DatabaseSync(join(directory, databaseFile), { readOnly: true });
   try {
     if (db.prepare('PRAGMA journal_mode').get()!.journal_mode !== 'delete') throw new Error('Backup is not a standalone snapshot.');
+    if (Number(db.prepare('PRAGMA user_version').get()!.user_version) !== manifest.schema_version) throw new Error('Backup schema does not match its manifest.');
     inspectDatabase(db, key);
   } finally { db.close(); }
   return manifest;
@@ -118,6 +122,7 @@ export function verifyBackup(path: string) {
 
 export function backupState(path: string, output: string) {
   return withState(path, false, (db, key, source) => {
+    const actualSchema = Number(db.prepare('PRAGMA user_version').get()!.user_version);
     const destination = newDestination(output, source);
     // Write the manifest last. Interrupted snapshots must never pass verification.
     db.prepare('VACUUM INTO ?').run(join(destination, databaseFile));
@@ -127,13 +132,13 @@ export function backupState(path: string, output: string) {
     finally { snapshot.close(); }
     syncFile(join(destination, databaseFile));
     privateWrite(join(destination, keyFile), key);
-    const manifest = { format: 'gate-backup', format_version: 1, gate_version: version, schema_version: schemaVersion, created_at: now(), files: {
+    const manifest = { format: 'gate-backup', format_version: 1, gate_version: version, schema_version: actualSchema, created_at: now(), files: {
       [databaseFile]: checksum(join(destination, databaseFile)), [keyFile]: checksum(join(destination, keyFile)),
     } };
     privateWrite(join(destination, backupManifestFile), JSON.stringify(manifest, null, 2) + '\n');
     syncDirectory(destination); syncDirectory(dirname(destination));
     verifyBackup(destination);
-    return { status: 'backup_created', directory: destination, schema_version: schemaVersion };
+    return { status: 'backup_created', directory: destination, schema_version: actualSchema };
   });
 }
 

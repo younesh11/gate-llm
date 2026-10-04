@@ -19,7 +19,9 @@ const secrets = [
   { rule: 'secret.private_key', label: 'Private-key header', pattern: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----/g }
 ];
 const pii: Record<PiiType, { label: string; pattern: RegExp; replacement: string; accepts?: (value: string) => boolean }> = {
-  email: { label: 'Email address', pattern: /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,63}\b/gi, replacement: '[EMAIL REDACTED]' },
+  // Bound both parts: repeated word boundaries without an @ must not cause
+  // quadratic backtracking on a maximum-size gateway prompt.
+  email: { label: 'Email address', pattern: /\b[A-Z0-9._%+-]{1,64}@[A-Z0-9.-]{1,253}\.[A-Z]{2,63}\b/gi, replacement: '[EMAIL REDACTED]' },
   us_ssn: { label: 'US SSN pattern', pattern: /\b\d{3}[- ]\d{2}[- ]\d{4}\b/g, replacement: '[ID REDACTED]' },
   phone: { label: 'International phone number', pattern: /(?<![\w+])\+\d[\d ().-]{6,38}\d(?![ ().-]*\d)/g, replacement: '[PHONE REDACTED]', accepts: value => { const digits = value.replace(/\D/g, ''); return digits.length >= 8 && digits.length <= 15; } },
   credit_card: { label: 'Payment-card number', pattern: /(?<!\d)(?:\d[ -]?){12,18}\d(?![ -]?\d)/g, replacement: '[PAYMENT CARD REDACTED]', accepts: validCard }

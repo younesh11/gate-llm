@@ -355,7 +355,7 @@ test('existing databases migrate per-request limits and reported token splits wi
     db.run('INSERT INTO virtual_keys (id,workspace_id,name,owner,token_hash,prefix,models,budget,rpm,max_request_tokens,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)', keyId, 'default', 'Old key', 'Team', hash('old-key'), 'rk_old', '["chat"]', 10000000, 60, 2048, now());
     db.recordUsage(keyId, now(), 50, 200, 30, 70);
     db.log({ key_id: keyId, input_tokens: 30, output_tokens: 70, cost: 50 });
-    db.db.exec('ALTER TABLE virtual_keys RENAME COLUMN max_request_tokens TO max_output; ALTER TABLE virtual_keys DROP COLUMN user_id; ALTER TABLE usage_daily DROP COLUMN input_tokens; ALTER TABLE usage_daily DROP COLUMN output_tokens; ALTER TABLE policies DROP COLUMN pii_types; ALTER TABLE policies DROP COLUMN term_match; PRAGMA user_version=1;');
+    db.db.exec('ALTER TABLE virtual_keys RENAME COLUMN max_request_tokens TO max_output; ALTER TABLE virtual_keys DROP COLUMN user_id; ALTER TABLE usage_daily DROP COLUMN input_tokens; ALTER TABLE usage_daily DROP COLUMN output_tokens; ALTER TABLE policies DROP COLUMN pii_types; ALTER TABLE policies DROP COLUMN term_match; ALTER TABLE providers DROP COLUMN token_counting; PRAGMA user_version=1;');
     db.close(); db = new Store(directory);
     const key = db.get('SELECT * FROM virtual_keys WHERE id=?', keyId)!;
     assert.equal(key.max_request_tokens, 2048); assert.equal(key.budget, 10000000); assert.equal(key.user_id, null);

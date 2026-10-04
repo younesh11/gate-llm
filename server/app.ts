@@ -14,7 +14,7 @@ import { loggingOptions, registerOperations, safeError, type LogDestination, typ
 
 type Options = { directory: string; allowPrivate?: boolean; secureCookie?: boolean; allowRemoteSetup?: boolean; staticDir?: string; timeoutMs?: number; random?: () => number; logLevel?: LogLevel; logDestination?: LogDestination };
 const name = z.string().trim().min(1).max(80);
-const providerSchema = z.object({ name, base_url: z.string().max(500), api_key: z.string().max(4096).optional(), enabled: z.boolean().default(true) });
+const providerSchema = z.object({ name, base_url: z.string().max(500), api_key: z.string().max(4096).optional(), token_counting: z.enum(['estimate', 'vllm']).optional(), enabled: z.boolean().default(true) });
 const deploymentSchema = z.object({ provider_id: z.string(), alias: z.string().regex(/^[a-zA-Z0-9._/-]{1,100}$/), upstream_model: z.string().min(1).max(200), weight: z.number().int().min(1).max(1000), input_price: z.number().finite().min(0).max(1000), output_price: z.number().finite().min(0).max(1000), enabled: z.boolean().default(true) });
 const policySchema = z.object({ name, blocked_terms: z.array(z.string().trim().min(1).max(100)).max(100), redact_pii: z.boolean(), block_secrets: z.boolean(), pii_types: z.array(z.enum(piiTypes)).max(4).default(defaultPiiTypes), term_match: z.enum(['substring', 'word']).default('substring') });
 const keySchema = z.object({ name, owner: name, models: z.array(z.string().min(1).max(100)).min(1).max(100), policy_id: z.string().nullable().default(null), budget: z.number().finite().min(0.01).max(100000).nullable(), rpm: z.number().int().min(1).max(10000), max_request_tokens: z.number().int().min(1).max(1000000), expires_at: z.string().datetime().nullable().default(null), token_limit: z.number().int().min(0).max(1e12).nullable().optional(), tpm: z.number().int().min(1).max(1e9).nullable().optional(), limit_period: z.enum(['lifetime', 'daily', 'monthly']).optional(), user_id: z.string().nullable().optional() });
@@ -37,13 +37,21 @@ export async function createApp(options: Options) {
     };
     app.addHook('onRequest', async (request, reply) => {
       reply.header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'same-origin').header('X-Frame-Options', 'DENY');
-      if (request.url.startsWith('/api')) {
+      // Authorize the router's matched route, not the raw URL: percent-encoded
+      // static path segments must have exactly the same permissions.
+      const route = request.routeOptions.url ?? '';
+      if (route.startsWith('/api/')) {
         reply.header('Cache-Control', 'no-store');
         if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)) {
           const origin = request.headers.origin;
-          if (origin && new URL(origin).host !== request.headers.host) throw new HttpError(403, 'Cross-origin administration is not allowed.');
+          let sameOrigin = true;
+          if (origin) {
+            try { sameOrigin = new URL(origin).origin === new URL(`${options.secureCookie ? 'https' : request.protocol}://${request.headers.host}`).origin; }
+            catch { sameOrigin = false; }
+          }
+          if (!sameOrigin || request.headers['sec-fetch-site'] === 'cross-site') throw new HttpError(403, 'Cross-origin administration is not allowed.');
         }
-        if (request.url.startsWith('/api/admin')) {
+        if (route.startsWith('/api/admin/')) {
           const user = sessionUser(request);
           if (request.method !== 'GET' && user.role !== 'owner') throw new HttpError(403, 'Only workspace owners can make this change.');
         }
@@ -72,7 +80,11 @@ export async function createApp(options: Options) {
     };
     app.post('/api/setup', async (request, reply) => {
       if (db.get('SELECT id FROM users LIMIT 1')) throw new HttpError(409, 'This workspace is already configured.');
-      if (!options.allowRemoteSetup && !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.ip)) throw new HttpError(403, 'Create the first owner from this machine, or explicitly enable remote setup.');
+      if (!options.allowRemoteSetup) {
+        let localHost = false;
+        try { localHost = ['localhost', '127.0.0.1', '[::1]'].includes(new URL(`http://${request.headers.host}`).hostname); } catch {}
+        if (!localHost || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.ip)) throw new HttpError(403, 'Create the first owner through localhost on this machine, or explicitly enable remote setup.');
+      }
       const input = memberSchema.omit({ role: true }).extend({ workspace: name }).parse(request.body);
       const user = { id: id(), workspace_id: 'default', ...input };
       db.transaction(() => {
@@ -102,7 +114,7 @@ export async function createApp(options: Options) {
     });
     app.get('/api/admin/state', async request => {
       const user = sessionUser(request), w = user.workspace_id;
-      const providers = db.all('SELECT id, name, base_url, enabled, created_at, (length(secret)>0) AS has_key FROM providers WHERE workspace_id=? ORDER BY created_at DESC', w);
+      const providers = db.all('SELECT id, name, base_url, enabled, created_at, token_counting, (length(secret)>0) AS has_key FROM providers WHERE workspace_id=? ORDER BY created_at DESC', w);
       const deployments = db.all('SELECT d.*, p.name AS provider_name FROM deployments d JOIN providers p ON p.id=d.provider_id WHERE d.workspace_id=? ORDER BY d.alias, d.created_at', w);
       const keys = db.all('SELECT id,name,owner,prefix,models,policy_id,budget,spent,reserved,rpm,max_request_tokens,expires_at,revoked,created_at,token_limit,tpm,limit_period,user_id FROM virtual_keys WHERE workspace_id=? ORDER BY created_at DESC', w).map(key => ({ ...key, models: JSON.parse(key.models), ...db.limitSummary(key) }));
       const policies = db.all('SELECT * FROM policies WHERE workspace_id=? ORDER BY created_at', w).map(policy => ({ ...policy, blocked_terms: JSON.parse(policy.blocked_terms), pii_types: policyPiiTypes(policy) }));
@@ -140,13 +152,16 @@ export async function createApp(options: Options) {
     app.post('/api/admin/providers', async request => {
       const user = sessionUser(request), input = providerSchema.parse(request.body), providerId = id();
       const url = await validateUpstream(input.base_url, !!options.allowPrivate);
-      db.run('INSERT INTO providers VALUES (?, ?, ?, ?, ?, ?, ?)', providerId, user.workspace_id, input.name, url, input.api_key ? db.seal(input.api_key) : '', Number(input.enabled), now());
+      if (input.token_counting === 'vllm' && !url.endsWith('/v1')) throw new HttpError(400, 'vLLM token counting requires a base URL ending in /v1.');
+      db.run('INSERT INTO providers (id,workspace_id,name,base_url,secret,enabled,created_at,token_counting) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', providerId, user.workspace_id, input.name, url, input.api_key ? db.seal(input.api_key) : '', Number(input.enabled), now(), input.token_counting ?? 'estimate');
       db.audit(user.workspace_id, user.email, 'provider.created', input.name); return { id: providerId };
     });
     app.put('/api/admin/providers/:id', async request => {
       const { user, row } = record('providers', request), input = providerSchema.parse(request.body);
       const url = await validateUpstream(input.base_url, !!options.allowPrivate);
-      db.run('UPDATE providers SET name=?, base_url=?, secret=?, enabled=? WHERE id=?', input.name, url, input.api_key === undefined ? row.secret : (input.api_key ? db.seal(input.api_key) : ''), Number(input.enabled), row.id);
+      const counting = input.token_counting ?? row.token_counting;
+      if (counting === 'vllm' && !url.endsWith('/v1')) throw new HttpError(400, 'vLLM token counting requires a base URL ending in /v1.');
+      db.run('UPDATE providers SET name=?, base_url=?, secret=?, enabled=?, token_counting=? WHERE id=?', input.name, url, input.api_key === undefined ? row.secret : (input.api_key ? db.seal(input.api_key) : ''), Number(input.enabled), counting, row.id);
       db.audit(user.workspace_id, user.email, 'provider.updated', input.name); return { ok: true };
     });
     app.post('/api/admin/deployments', async request => {
