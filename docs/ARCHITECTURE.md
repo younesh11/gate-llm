@@ -26,4 +26,6 @@ The npm archive, wheel and container all execute the same Node server. The serve
 
 A single process owns each data directory. SQLite transactions prevent concurrent requests from consuming the same reserved quota. Completed usage survives request-log cleanup. Model calls are retried only after explicit HTTP 429 responses; ambiguous failures retain estimated charges.
 
-The current source uses schema 4 for opt-in provider token counting; published application version 0.2.2 uses schema 3. All changes use explicit migrations. The current workspace model is preparatory isolation, not multi-tenant SaaS. Native Bedrock Converse/IAM, SSO, billing and multiple gateway workers are future work.
+The current source uses schema 5 for member permissions, shared allowances and approvals; published application version 0.2.2 uses schema 3. All changes use explicit migrations. The current workspace model is preparatory isolation, not multi-tenant SaaS. AWS catalog discovery and public pricing use AWS APIs, but native Bedrock Converse invocation, SSO, billing and multiple gateway workers are future work.
+
+The production target is thousands of users and concurrent requests. The current implementation has not been qualified for that workload. The [production architecture and qualification plan](PRODUCTION_PLAN.md) prioritizes PostgreSQL, cross-instance accounting and load/failure testing, and separates proposed capacity targets from measured results.

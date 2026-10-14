@@ -4,6 +4,15 @@ This project uses Semantic Versioning. Dates use YYYY-MM-DD.
 
 ## [Unreleased]
 
+- Simplify source deployment to `./scripts/start.sh`: create private environment defaults without overwriting existing settings, build with Docker Compose, wait for readiness, and print the mapped address. Document one host-port setting, persistent storage, optional AWS credentials and the incomplete PostgreSQL integration.
+- Start the PostgreSQL foundation with async bounded pools, checksummed migrations and bigint quota reservations/settlement tested against a disposable PostgreSQL container. This is an internal increment; live gateway handlers and user data still use SQLite, and multi-instance recovery remains pending.
+- Restrict regional AWS model discovery to active on-demand models whose region availability AWS explicitly confirms. Hide unavailable/unverified, provisioned-only and profile-only models, separate cross-region profiles, and never infer regional availability or local prices from cross-region price records.
+- Show separate input/output AWS list prices in model search, in USD per million tokens. Fetch regional public price files with bounded requests and caching; label cross-region rates, refuse ambiguous matches, and preserve discovery when pricing is unavailable. Deployment accounting prices remain explicitly configured.
+- Add a member portal for assigned models, allowance requests, personal keys and private usage. Owners assign model access and required guardrails, suspend members, approve shared money/token allowances, and review delegated deployments with owner-controlled prices.
+- Migrate to schema 5 with durable per-member usage and reservation ownership. Enforce shared allowances across keys, retain charges through rotation/recovery, and revoke assigned keys when removing a member. Existing viewers now receive a private view rather than workspace-wide metadata.
+
+- Add owner-only AWS model discovery by commercial region, including searchable foundation models and paginated inference profiles. Use runtime IAM credentials, bound requests, and keep discovery separate from invocation access, pricing and quotas.
+
 - Enforce dashboard permissions and origin checks using the matched route, including percent-encoded paths. Require a localhost Host header as well as a loopback peer for local-only first-owner setup.
 - Validate upstream DNS answers at socket connection time for both generation and token counting. Reject alternate private IPv4/IPv6 forms, known cloud metadata addresses and metadata DNS aliases; retain trusted private-model opt-in and reject redirects.
 - Bound email PII matching to prevent adversarial long text from stalling the gateway. Add authorization, DNS-rebinding, metadata, redirect and inspection-work regression tests.

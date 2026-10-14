@@ -11,14 +11,17 @@ import { Store, HttpError, hash, id, now, issueToken, passwordHash, passwordMatc
 import { registerGateway, validateUpstream } from './gateway.ts';
 import { defaultPiiTypes, inspectPolicy, piiTypes, policyPiiTypes } from './guards.ts';
 import { loggingOptions, registerOperations, safeError, type LogDestination, type LogLevel } from './operations.ts';
+import type { PriceLoader } from './aws-pricing.ts';
+import { accessFor, memberState, registerMembers } from './members.ts';
+import { registerAwsCatalog, type CatalogClientFactory } from './aws-catalog.ts';
 
-type Options = { directory: string; allowPrivate?: boolean; secureCookie?: boolean; allowRemoteSetup?: boolean; staticDir?: string; timeoutMs?: number; random?: () => number; logLevel?: LogLevel; logDestination?: LogDestination };
+type Options = { directory: string; allowPrivate?: boolean; secureCookie?: boolean; allowRemoteSetup?: boolean; staticDir?: string; timeoutMs?: number; random?: () => number; logLevel?: LogLevel; logDestination?: LogDestination; catalogClientFactory?: CatalogClientFactory; priceLoader?: PriceLoader };
 const name = z.string().trim().min(1).max(80);
 const providerSchema = z.object({ name, base_url: z.string().max(500), api_key: z.string().max(4096).optional(), token_counting: z.enum(['estimate', 'vllm']).optional(), enabled: z.boolean().default(true) });
 const deploymentSchema = z.object({ provider_id: z.string(), alias: z.string().regex(/^[a-zA-Z0-9._/-]{1,100}$/), upstream_model: z.string().min(1).max(200), weight: z.number().int().min(1).max(1000), input_price: z.number().finite().min(0).max(1000), output_price: z.number().finite().min(0).max(1000), enabled: z.boolean().default(true) });
 const policySchema = z.object({ name, blocked_terms: z.array(z.string().trim().min(1).max(100)).max(100), redact_pii: z.boolean(), block_secrets: z.boolean(), pii_types: z.array(z.enum(piiTypes)).max(4).default(defaultPiiTypes), term_match: z.enum(['substring', 'word']).default('substring') });
 const keySchema = z.object({ name, owner: name, models: z.array(z.string().min(1).max(100)).min(1).max(100), policy_id: z.string().nullable().default(null), budget: z.number().finite().min(0.01).max(100000).nullable(), rpm: z.number().int().min(1).max(10000), max_request_tokens: z.number().int().min(1).max(1000000), expires_at: z.string().datetime().nullable().default(null), token_limit: z.number().int().min(0).max(1e12).nullable().optional(), tpm: z.number().int().min(1).max(1e9).nullable().optional(), limit_period: z.enum(['lifetime', 'daily', 'monthly']).optional(), user_id: z.string().nullable().optional() });
-const memberSchema = z.object({ name, email: z.string().trim().email().max(150).transform(v => v.toLowerCase()), password: z.string().min(12).max(200), role: z.enum(['owner', 'viewer']) });
+const memberSchema = z.object({ name, email: z.string().trim().email().max(150).transform(v => v.toLowerCase()), password: z.string().min(12).max(200), role: z.enum(['owner', 'member', 'viewer']) });
 
 export async function createApp(options: Options) {
   const app = Fastify({ ...loggingOptions(options.logLevel, options.logDestination), bodyLimit: 256 * 1024, requestTimeout: 150000 });
@@ -33,6 +36,7 @@ export async function createApp(options: Options) {
       if (!request.cookies.relay_session) throw new HttpError(401, 'Sign in to continue.', 'authentication_required');
       const user = db.get('SELECT u.id, u.workspace_id, u.name, u.email, u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?', hash(request.cookies.relay_session), Date.now());
       if (!user) throw new HttpError(401, 'Your session has expired. Sign in again.', 'authentication_required');
+      if (accessFor(db, user.id).suspended) throw new HttpError(403, 'Your account is suspended. Contact your workspace owner.');
       return user;
     };
     app.addHook('onRequest', async (request, reply) => {
@@ -51,6 +55,7 @@ export async function createApp(options: Options) {
           }
           if (!sameOrigin || request.headers['sec-fetch-site'] === 'cross-site') throw new HttpError(403, 'Cross-origin administration is not allowed.');
         }
+        if (route.startsWith('/api/member/')) sessionUser(request);
         if (route.startsWith('/api/admin/')) {
           const user = sessionUser(request);
           if (request.method !== 'GET' && user.role !== 'owner') throw new HttpError(403, 'Only workspace owners can make this change.');
@@ -104,7 +109,7 @@ export async function createApp(options: Options) {
       if (entry.count >= 10) throw new HttpError(429, 'Too many sign-in attempts. Try again in 15 minutes.');
       entry.count++; attempts.set(limitKey, entry);
       const user = db.get('SELECT * FROM users WHERE email=?', input.email);
-      if (!user || !passwordMatches(input.password, user.password_hash)) throw new HttpError(401, 'Email or password is incorrect.');
+      if (!user || accessFor(db, user.id).suspended || !passwordMatches(input.password, user.password_hash)) throw new HttpError(401, 'Email or password is incorrect.');
       attempts.delete(limitKey); db.audit(user.workspace_id, user.email, 'session.created', user.name);
       return establishSession(reply, user);
     });
@@ -114,6 +119,7 @@ export async function createApp(options: Options) {
     });
     app.get('/api/admin/state', async request => {
       const user = sessionUser(request), w = user.workspace_id;
+      if (user.role !== 'owner') return memberState(db, user);
       const providers = db.all('SELECT id, name, base_url, enabled, created_at, token_counting, (length(secret)>0) AS has_key FROM providers WHERE workspace_id=? ORDER BY created_at DESC', w);
       const deployments = db.all('SELECT d.*, p.name AS provider_name FROM deployments d JOIN providers p ON p.id=d.provider_id WHERE d.workspace_id=? ORDER BY d.alias, d.created_at', w);
       const keys = db.all('SELECT id,name,owner,prefix,models,policy_id,budget,spent,reserved,rpm,max_request_tokens,expires_at,revoked,created_at,token_limit,tpm,limit_period,user_id FROM virtual_keys WHERE workspace_id=? ORDER BY created_at DESC', w).map(key => ({ ...key, models: JSON.parse(key.models), ...db.limitSummary(key) }));
@@ -140,9 +146,9 @@ export async function createApp(options: Options) {
         COALESCE(SUM(d.output_tokens),0) AS output_tokens,COALESCE(SUM(d.cost),0) AS cost
         FROM virtual_keys k LEFT JOIN users u ON u.id=k.user_id AND u.workspace_id=k.workspace_id
         LEFT JOIN usage_daily d ON d.key_id=k.id AND d.day>=? AND d.day<=?
-        WHERE k.workspace_id=? GROUP BY k.id ORDER BY tokens DESC,k.name`, since, today, user.workspace_id);
+        WHERE k.workspace_id=? AND (?='owner' OR EXISTS (SELECT 1 FROM member_keys m WHERE m.key_id=k.id AND m.user_id=?)) GROUP BY k.id ORDER BY tokens DESC,k.name`, since, today, user.workspace_id, user.role, user.id);
       const daily = db.all(`SELECT d.* FROM usage_daily d JOIN virtual_keys k ON k.id=d.key_id
-        WHERE k.workspace_id=? AND d.day>=? AND d.day<=? ORDER BY d.day`, user.workspace_id, trendStart, today);
+        WHERE k.workspace_id=? AND d.day>=? AND d.day<=? AND (?='owner' OR EXISTS (SELECT 1 FROM member_keys m WHERE m.key_id=k.id AND m.user_id=?)) ORDER BY d.day`, user.workspace_id, trendStart, today, user.role, user.id);
       return { period, since: since || null, trend_start: trendStart, through: today, by_key: byKey, daily };
     });
     const record = (table: string, request: any) => {
@@ -217,6 +223,7 @@ export async function createApp(options: Options) {
     app.put('/api/admin/keys/:id', async request => {
       const { user, row } = record('virtual_keys', request), input = keySchema.parse(request.body);
       validateKey(input, user.workspace_id);
+      if (db.get('SELECT key_id FROM member_keys WHERE key_id=?', row.id) && input.user_id !== undefined && input.user_id !== row.user_id) throw new HttpError(400, 'Personal keys cannot be transferred. Revoke this key and create a new one.');
       db.run('UPDATE virtual_keys SET name=?,owner=?,models=?,policy_id=?,budget=?,rpm=?,max_request_tokens=?,expires_at=?,token_limit=?,tpm=?,limit_period=?,user_id=? WHERE id=?', input.name, input.owner, JSON.stringify(input.models), input.policy_id, input.budget === null ? null : Math.round(input.budget * 1e6), input.rpm, input.max_request_tokens, input.expires_at, input.token_limit === undefined ? row.token_limit : input.token_limit, input.tpm === undefined ? row.tpm : input.tpm, input.limit_period ?? row.limit_period, input.user_id === undefined ? row.user_id : input.user_id, row.id);
       db.audit(user.workspace_id, user.email, 'key.updated', input.name); return { ok: true };
     });
@@ -239,7 +246,7 @@ export async function createApp(options: Options) {
     app.delete('/api/admin/users/:id', async request => {
       const { user, row } = record('users', request);
       if (row.id === user.id) throw new HttpError(400, 'You cannot remove your own account.');
-      db.transaction(() => { db.run('DELETE FROM sessions WHERE user_id=?', row.id); db.run('DELETE FROM users WHERE id=?', row.id); db.audit(user.workspace_id, user.email, 'member.removed', row.email); });
+      db.transaction(() => { db.run('UPDATE virtual_keys SET revoked=1 WHERE user_id=?', row.id); db.run("UPDATE allowance_requests SET status='rejected',decision_note='Member removed',resolved_at=? WHERE user_id=? AND status='pending'", now(), row.id); db.run("UPDATE deployment_requests SET status='rejected' WHERE user_id=? AND status='pending'", row.id); db.run('DELETE FROM sessions WHERE user_id=?', row.id); db.run('DELETE FROM users WHERE id=?', row.id); db.audit(user.workspace_id, user.email, 'member.removed', row.email); });
       return { ok: true };
     });
     app.put('/api/admin/workspace', async request => {
@@ -247,6 +254,8 @@ export async function createApp(options: Options) {
       db.run('UPDATE workspaces SET name=? WHERE id=?', input.name, user.workspace_id);
       db.audit(user.workspace_id, user.email, 'workspace.updated', input.name); return { ok: true };
     });
+    registerMembers(app, db, sessionUser);
+    registerAwsCatalog(app, request => sessionUser(request).workspace_id, options.catalogClientFactory, options.priceLoader);
     registerGateway(app, db, { allowPrivate: !!options.allowPrivate, timeoutMs: options.timeoutMs, random: options.random });
     const staticDir = options.staticDir ?? fileURLToPath(new URL('../dist/', import.meta.url));
     if (existsSync(staticDir)) {

@@ -71,6 +71,7 @@ function inspectDatabase(db: DatabaseSync, key: Buffer) {
   for (const table of ['users', 'sessions', 'deployments', 'policies', 'virtual_keys', 'rate_windows', 'requests', 'reservations', 'usage_daily', 'audit']) {
     db.prepare(`SELECT COUNT(*) FROM ${table}`).get();
   }
+  if (actualSchema >= 5) for (const table of ['member_access','member_allowances','member_usage','member_holds','member_keys','allowance_requests','deployment_requests']) db.prepare(`SELECT COUNT(*) FROM ${table}`).get();
   try {
     // Local/OpenAI-compatible providers may deliberately have no API key.
     for (const row of db.prepare("SELECT secret FROM providers WHERE secret<>''").all()) {

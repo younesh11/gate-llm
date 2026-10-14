@@ -12,8 +12,11 @@ CLI flags override environment variables. Existing environment variables take pr
 | ALLOW_REMOTE_SETUP | --allow-remote-setup | false | Permit first-owner setup beyond loopback |
 | LOG_LEVEL | --log-level | info | Structured operational logs: silent, fatal, error, warn, info, debug or trace |
 | GATE_RUNTIME_DIR | — | ~/.cache/gate-llm | Python launcher's unpacked runtime cache only |
-| GATE_PORT | — | 4310 | Compose host port; distinct from container PORT |
-| GATE_IMAGE | — | gate-llm:0.2.2 | Compose image reference |
+| GATE_PORT | — | 4310 | Compose host port for both dashboard and API; edit this in .env |
+| GATE_BIND | — | 127.0.0.1 | Compose host interface; keep loopback for local/SSH access |
+| GATE_IMAGE | — | gate-llm:0.2.2 | Compose image reference; .env.example selects gate-llm:local for source builds |
+| AWS_REGION | — | eu-west-2 in Compose | AWS SDK default region; catalog picker explicitly selects its own region |
+| AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN | — | empty | Optional AWS runtime identity for catalog discovery; prefer an IAM role |
 
 Boolean environment values must be exactly `true` to enable an option. CLI flags enable the corresponding option. `gate-llm --help` and `--version` do not start the server.
 
@@ -28,3 +31,5 @@ Local-only first-owner setup requires both a loopback connection and a Host of `
 `ALLOW_PRIVATE_UPSTREAMS` does not allow known cloud metadata endpoints. Name resolution is checked when saving providers and on the actual outgoing socket for generation and tokenization, including when private models are enabled.
 
 Model access uses aliases configured in Models & routing. Every deployment under the same alias is eligible for its weighted share while enabled and outside cooldown. A key must explicitly allow the alias. Bedrock models that require Converse/IAM cannot be configured as ordinary compatible endpoints in this release.
+
+For Compose, `.env` is an interpolation file, not a wholesale container environment file. Only variables explicitly listed in `compose.yaml` are passed through. `HOST`, `PORT`, `DATA_DIR` and `ALLOW_REMOTE_SETUP` in `.env.example` are for direct Node/npm/pip execution; Docker uses its fixed internal listener/data path and enables setup through container NAT. Start with `./scripts/start.sh`. Apply environment changes with `docker compose up -d --wait`, not just restart. PostgreSQL integration is still pending; `DATABASE_URL` does not switch storage.

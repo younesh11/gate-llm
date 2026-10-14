@@ -52,6 +52,8 @@ jobs:
       - run: npm ci
       - run: npm audit --audit-level=high
       - run: npm test
+      - run: docker pull postgres:18-alpine
+      - run: npm run test:postgres
       - run: npm run test:python
       - run: npm run check:version
       - run: npm run pack:release

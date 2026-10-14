@@ -8,11 +8,16 @@ services:
         VERSION: ${GATE_VERSION:-0.2.2}
         REVISION: ${GATE_REVISION:-local}
     ports:
-      - "127.0.0.1:${GATE_PORT:-4310}:4310"
+      - "${GATE_BIND:-127.0.0.1}:${GATE_PORT:-4310}:4310"
     environment:
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       ALLOW_PRIVATE_UPSTREAMS: ${ALLOW_PRIVATE_UPSTREAMS:-false}
+      # Optional AWS catalog credentials. Prefer an instance/task role on AWS.
+      AWS_REGION: ${AWS_REGION:-eu-west-2}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
       # Required through container NAT; the host port remains loopback-only.
       ALLOW_REMOTE_SETUP: "true"
     volumes:

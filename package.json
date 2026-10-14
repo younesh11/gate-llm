@@ -20,17 +20,21 @@
     "test:package": "node scripts/smoke-package.mjs",
     "package:python": "node scripts/prepare-python.mjs",
     "check:version": "node scripts/sync-version.mjs --check",
-    "test:python": "python3 scripts/test-python.py"
+    "test:python": "python3 scripts/test-python.py",
+    "test:postgres": "node scripts/test-postgres.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock": "^3.1151.0",
     "@fastify/cookie": "^11.0.2",
     "@fastify/static": "^10.1.5",
     "fastify": "^5.12.5",
+    "pg": "^8.23.1",
     "undici": "^7.30.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {
     "@types/node": "^22.13.0",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
@@ -69,7 +73,9 @@
     "@fastify/static",
     "fastify",
     "zod",
-    "undici"
+    "undici",
+    "@aws-sdk/client-bedrock",
+    "pg"
   ],
   "repository": {
     "type": "git",

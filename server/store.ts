@@ -5,7 +5,7 @@ import { randomBytes, randomUUID, createHash, createCipheriv, createDecipheriv, 
 import { DirectoryLock } from './directory-lock.ts';
 
 export type Row = Record<string, any>;
-export const schemaVersion = 4;
+export const schemaVersion = 5;
 export class Store {
   db!: DatabaseSync;
   encryptionKey: Buffer;
@@ -91,6 +91,27 @@ export class Store {
           this.db.exec("ALTER TABLE providers ADD COLUMN token_counting TEXT NOT NULL DEFAULT 'estimate' CHECK(token_counting IN ('estimate','vllm')); PRAGMA user_version=4;");
         });
       }
+      if (Number(this.get('PRAGMA user_version')!.user_version) < 5) {
+        this.transaction(() => {
+          // Separate tables preserve old account and deployment records unchanged.
+          const hasLedger = !!this.get("SELECT name FROM sqlite_master WHERE type='table' AND name='member_usage'");
+          this.db.exec(`
+            CREATE TABLE IF NOT EXISTS member_access (user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, models TEXT NOT NULL DEFAULT '[]', provider_ids TEXT NOT NULL DEFAULT '[]', policy_id TEXT REFERENCES policies(id), suspended INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS member_allowances (user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, budget INTEGER, token_limit INTEGER, limit_period TEXT NOT NULL, expires_at TEXT);
+            CREATE TABLE IF NOT EXISTS member_usage (user_id TEXT NOT NULL, day TEXT NOT NULL, cost INTEGER NOT NULL DEFAULT 0, tokens INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(user_id,day));
+            CREATE TABLE IF NOT EXISTS member_keys (key_id TEXT PRIMARY KEY REFERENCES virtual_keys(id), user_id TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS member_holds (reservation_id TEXT PRIMARY KEY REFERENCES reservations(id) ON DELETE CASCADE, user_id TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS allowance_requests (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, user_id TEXT NOT NULL, budget INTEGER, token_limit INTEGER, limit_period TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', decision_note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, resolved_at TEXT);
+            CREATE UNIQUE INDEX IF NOT EXISTS one_pending_allowance ON allowance_requests(user_id) WHERE status='pending';
+            CREATE TABLE IF NOT EXISTS deployment_requests (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, user_id TEXT NOT NULL, provider_id TEXT NOT NULL, alias TEXT NOT NULL, upstream_model TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL);
+          `);
+          if (!hasLedger) {
+            this.run('INSERT INTO member_usage SELECT k.user_id,d.day,SUM(d.cost),SUM(d.tokens) FROM usage_daily d JOIN virtual_keys k ON k.id=d.key_id WHERE k.user_id IS NOT NULL GROUP BY k.user_id,d.day');
+            this.run('INSERT INTO member_holds SELECT r.id,k.user_id FROM reservations r JOIN virtual_keys k ON k.id=r.key_id WHERE k.user_id IS NOT NULL');
+          }
+          this.db.exec('PRAGMA user_version=5');
+        });
+      }
     } catch (error) {
       this.db?.close();
       this.lock.close();
@@ -139,12 +160,24 @@ export class Store {
   recordUsage(keyId: string, timestamp: string, cost: number, tokens: number, inputTokens = 0, outputTokens = 0) {
     this.run('INSERT INTO usage_daily (key_id,day,cost,tokens,input_tokens,output_tokens) VALUES (?,?,?,?,?,?) ON CONFLICT(key_id,day) DO UPDATE SET cost=cost+excluded.cost,tokens=tokens+excluded.tokens,input_tokens=input_tokens+excluded.input_tokens,output_tokens=output_tokens+excluded.output_tokens', keyId, timestamp.slice(0, 10), cost, tokens, inputTokens, outputTokens);
   }
+  memberSummary(userId: string, timestamp = Date.now()) {
+    const allowance = this.get('SELECT * FROM member_allowances WHERE user_id=?', userId);
+    const date = new Date(timestamp), period = allowance?.limit_period ?? 'lifetime';
+    const start = period === 'daily' ? date.toISOString().slice(0,10) : period === 'monthly' ? date.toISOString().slice(0,7) + '-01' : '';
+    const usage = this.get('SELECT COALESCE(SUM(cost),0) AS cost,COALESCE(SUM(tokens),0) AS tokens FROM member_usage WHERE user_id=? AND day>=?', userId, start)!;
+    const held = this.get('SELECT COALESCE(SUM(r.amount),0) AS cost,COALESCE(SUM(r.token_amount),0) AS tokens FROM reservations r JOIN member_holds h ON h.reservation_id=r.id WHERE h.user_id=? AND r.created_at>=?', userId, start ? start + 'T00:00:00.000Z' : '')!;
+    return { approved: !!allowance, budget: allowance?.budget ?? null, token_limit: allowance?.token_limit ?? null, limit_period: period, expires_at: allowance?.expires_at ?? null, spent: usage.cost, tokens_used: usage.tokens, money_reserved: held.cost, tokens_reserved: held.tokens };
+  }
+  recordMemberUsage(userId: string | null | undefined, timestamp: string, cost: number, tokens: number) {
+    if (userId) this.run('INSERT INTO member_usage VALUES (?,?,?,?) ON CONFLICT(user_id,day) DO UPDATE SET cost=cost+excluded.cost,tokens=tokens+excluded.tokens', userId, timestamp.slice(0,10), cost, tokens);
+  }
   recoverReservations() {
     // One gateway process per data directory. An interrupted request may have been billed.
     this.transaction(() => {
       for (const row of this.all('SELECT r.*, k.name AS key_name FROM reservations r JOIN virtual_keys k ON k.id=r.key_id')) {
         this.run('UPDATE virtual_keys SET spent=spent+?, reserved=MAX(0,reserved-?) WHERE id=?', row.amount, row.amount, row.key_id);
         this.recordUsage(row.key_id, row.created_at, row.amount, row.token_amount);
+        this.recordMemberUsage(this.get('SELECT user_id FROM member_holds WHERE reservation_id=?', row.id)?.user_id, row.created_at, row.amount, row.token_amount);
         this.log({ workspace_id: row.workspace_id, key_id: row.key_id, key_name: row.key_name, model: row.model, status: 'interrupted', http_status: 502, cost: row.amount, estimated: 1, created_at: row.created_at });
       }
       this.run('DELETE FROM reservations');

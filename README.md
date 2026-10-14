@@ -2,7 +2,7 @@
 
 **Gateway for AI Traffic & Enforcement**
 
-A small, independent, self-hosted LLM gateway for you and your team. One endpoint for your models, a dashboard for your keys and usage, and limits enforced before requests reach a provider. Built with TypeScript, Fastify, React and SQLite; no LiteLLM dependency.
+An independent, self-hosted LLM gateway. One endpoint for your models, a dashboard for your keys and usage, and limits enforced before requests reach a provider. The current beta uses TypeScript, Fastify, React and SQLite; no LiteLLM dependency.
 
 **Version 0.2.2 · MIT license · Single instance**
 
@@ -19,19 +19,27 @@ A small, independent, self-hosted LLM gateway for you and your team. One endpoin
 
 Operational JSON logs, generated request IDs, database readiness and crash-released ownership are covered in [operations](docs/OPERATIONS.md). This is an internal beta; these foundations increments do not establish full production readiness.
 
+The intended production scale is applications serving thousands of users. The [PostgreSQL foundation](docs/POSTGRES_FOUNDATION.md) has started locally; the running gateway still uses SQLite. Cross-instance coordination and measured capacity/failure testing follow the [production plan](docs/PRODUCTION_PLAN.md). The current release is not qualified for that scale.
+
 See [gateway behavior and limitations](docs/GATEWAY.md) for accounting, compatibility and security details. Native AWS Bedrock IAM/Converse, SSO, customer billing and multiple gateway replicas are not implemented in 0.2.2.
 
 ## Start with Docker
 
-The public image supports Linux AMD64 and ARM64. From this source directory:
+Docker with Compose is the only host dependency. To run the current source:
 
 ```sh
-GATE_IMAGE=ghcr.io/younesh11/gate-llm:0.2.2 docker compose up -d --no-build --pull always
+git clone https://github.com/younesh11/gate-llm.git
+cd gate-llm
+./scripts/start.sh
 ```
 
-To build the image yourself instead, run `docker compose up --build -d`.
+Open **http://localhost:4310** and create your owner account. The script creates a private `.env` if missing, builds the image and waits for readiness. Existing configuration and persistent data are preserved.
 
-Open **http://127.0.0.1:4310** and create your owner account. Data persists in a named volume. If port 4310 is occupied, prefix the command with `GATE_PORT=4313`. The container runs as a non-root user and publishes to host loopback by default.
+**Different port?** Set `GATE_PORT=8080` in `.env`, then run `./scripts/start.sh` again. The dashboard and API use the same port. Keep `GATE_BIND=127.0.0.1` for local access or an SSH tunnel.
+
+Prefer the standard commands? Run `cp .env.example .env`, `chmod 600 .env`, edit the settings, then `docker compose up --build -d --wait`. Stop with `docker compose down`; **do not add `-v`**, which deletes stored data.
+
+This Compose setup currently uses persistent SQLite. The PostgreSQL foundation is not yet connected to the gateway. For published images, optional AWS credentials and remote access, see [installation](docs/INSTALLATION.md).
 
 ## Install a release package
 
@@ -98,6 +106,8 @@ npm run test:package
 
 - [Installation](docs/INSTALLATION.md) and [configuration](docs/CONFIGURATION.md)
 - [Gateway features, API behavior and limits](docs/GATEWAY.md)
+- [Member access and approval flow](docs/MEMBER_ACCESS.md) (unreleased source feature)
+- [AWS model catalog setup](docs/AWS_CATALOG.md) (unreleased source feature)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Upgrades, backups and migration](docs/UPGRADING.md)
 - [Backup, restore and password recovery](docs/RECOVERY.md), including Docker examples

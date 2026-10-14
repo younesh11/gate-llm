@@ -4,12 +4,15 @@ import { Activity, ArrowUpRight, Check, CheckCircle2, ChevronDown, ChevronRight,
 import './style.css';
 import { UsageDashboard } from './UsageDashboard';
 import { Guardrails, PolicyFields, type PolicyDraft } from './Guardrails';
+import { MemberHome, TeamManager } from './MemberAccess';
+import { AwsModels } from './AwsModels';
 
 type Row = Record<string, any>;
-type View = 'overview' | 'usage' | 'providers' | 'models' | 'keys' | 'playground' | 'guardrails' | 'activity' | 'team' | 'settings';
+type View = 'overview' | 'usage' | 'providers' | 'models' | 'aws' | 'keys' | 'playground' | 'guardrails' | 'activity' | 'team' | 'settings';
 const nav: { id: View; label: string; icon: any; section?: string }[] = [
   { id: 'overview', label: 'Overview', icon: Gauge }, { id: 'usage', label: 'Token usage', icon: Activity }, { id: 'playground', label: 'Playground', icon: Terminal },
   { id: 'providers', label: 'Providers', icon: Server, section: 'MANAGE' }, { id: 'models', label: 'Models & routing', icon: Network },
+  { id: 'aws', label: 'AWS models', icon: Layers3 },
   { id: 'keys', label: 'Virtual keys', icon: KeyRound }, { id: 'guardrails', label: 'Guardrails', icon: ShieldCheck },
   { id: 'activity', label: 'Activity', icon: Activity, section: 'WORKSPACE' }, { id: 'team', label: 'Team', icon: Users }, { id: 'settings', label: 'Settings', icon: Settings2 }
 ];
@@ -33,16 +36,17 @@ function App() {
   const [session, setSession] = useState<Row | null>(null), [data, setData] = useState<Row | null>(null);
   const [view, setView] = useState<View>('overview'), [dialog, setDialog] = useState<Row | null>(null), [notice, setNotice] = useState(''), [error, setError] = useState('');
   const [search, setSearch] = useState(''), [playKey, setPlayKey] = useState(''), [mobileNav, setMobileNav] = useState(false);
-  const refresh = async () => { try { const current = await api('/session'); setSession(current); if (current.user) setData(await api('/admin/state')); } catch (e: any) { setError(e.message); } };
+  const refresh = async () => { try { const current = await api('/session'); const next = current.user ? await api('/admin/state') : null; setData(next); setSession(current); if (!current.user) { setPlayKey(''); setDialog(null); setView('overview'); } } catch (e: any) { setError(e.message); } };
   useEffect(() => { void refresh(); }, []);
   useEffect(() => { if (!notice) return; const timer = setTimeout(() => setNotice(''), 4500); return () => clearTimeout(timer); }, [notice]);
-  useEffect(() => { const timer = setInterval(() => { if (session?.user) void api('/admin/state').then(setData).catch(() => {}); }, 15000); return () => clearInterval(timer); }, [session?.user?.id]);
+  useEffect(() => { const timer = setInterval(() => { if (session?.user) void api('/admin/state').then(setData).catch(() => { void refresh(); }); }, 15000); return () => clearInterval(timer); }, [session?.user?.id]);
   const go = (next: View) => { setView(next); setSearch(''); setMobileNav(false); window.scrollTo({ top: 0 }); };
   const perform = async (fn: () => Promise<any>, message: string) => { try { await fn(); setNotice(message); await refresh(); } catch (e: any) { setError(e.message); } };
   const copy = async (value: string) => { try { await navigator.clipboard.writeText(value); setNotice('Copied to clipboard'); } catch { setError('Clipboard is unavailable. Select and copy the text manually.'); } };
   if (!session) return <div className="loading"><Brand/><p>{error || 'Connecting to your gateway…'}</p>{error && <button onClick={refresh}>Try again</button>}</div>;
   if (!session.user) return <Auth setup={session.setup} complete={refresh}/>;
   if (!data) return <div className="loading"><Brand/><p>{error || 'Loading workspace…'}</p><button onClick={refresh}>Retry</button></div>;
+  if (session.user.role !== 'owner') return <MemberHome session={session} data={data} refresh={refresh} logout={async()=>{await api('/logout',{});setData(null);setPlayKey('');await refresh();}} playground={(aliases,key,setKey)=><Playground aliases={aliases} playKey={key} setPlayKey={setKey} refresh={refresh}/>}/>;
   const owner = session.user.role === 'owner', aliases = [...new Set<string>(data.deployments.map((d: Row) => d.alias))];
   const activeKeys = data.keys.filter((key: Row) => !key.revoked && (!key.expires_at || key.expires_at > new Date().toISOString()));
   const open = (kind: string, row?: Row) => setDialog({ kind, row });
@@ -52,11 +56,12 @@ function App() {
     usage: ['Token usage', 'See who uses your tokens, across keys and applications.'],
     providers: ['Providers', 'Connect a hosted API or your own OpenAI-compatible model.'],
     models: ['Models & routing', 'One model alias. Multiple deployments. Weighted traffic.'],
+    aws: ['AWS model catalog', 'Browse Bedrock models and inference profiles by region.'],
     keys: ['Virtual keys', 'Give every application its own access, limits, and policies.'],
     playground: ['Playground', 'Test a model through the same gateway your applications use.'],
     guardrails: ['Guardrails', 'Inspect and protect requests before they reach a provider.'],
     activity: ['Activity', 'Request metadata and workspace changes. Prompt content stays out of logs.'],
-    team: ['Your team', 'Workspace owners manage access. Viewers can inspect and test.'],
+    team: ['Your team', 'Assign model access, review allowances and manage deployment permissions.'],
     settings: ['Workspace settings', 'A small, self-hosted gateway. Under your control.']
   };
   const createActions: Partial<Record<View, [string, string]>> = { providers: ['provider', 'Add provider'], models: ['deployment', 'Add deployment'], keys: ['key', 'Create key'], guardrails: ['policy', 'Create policy'], team: ['user', 'Add member'] };
@@ -73,6 +78,7 @@ function App() {
       <main>
         <div className="page-head"><div><div className="eyebrow">{view === 'overview' ? 'WORKSPACE OVERVIEW' : 'GATE / ' + view.toUpperCase()}</div><h1>{titles[view][0]}</h1><p>{titles[view][1]}</p></div><div className="page-actions">{view === 'overview' && <><button className="button secondary" onClick={() => go('playground')}><Terminal size={16}/> Open playground</button>{owner && <button className="button primary" onClick={() => open('key')} disabled={!aliases.length}><Plus size={17}/> Create key</button>}</>}{owner && action && <button className="button primary" onClick={() => open(action[0])} disabled={view === 'keys' && !aliases.length || view === 'models' && !data.providers.length}><Plus size={17}/>{action[1]}</button>}</div></div>
         {view === 'overview' && <Overview data={data} activeKeys={activeKeys.length} go={go} open={open} owner={owner}/>}
+        {view === 'aws' && <AwsModels owner={owner} copy={copy}/>}
         {['providers', 'models', 'keys'].includes(view) && <div className="filter-bar"><div className="search"><Search size={17}/><input aria-label={`Search ${view}`} placeholder={`Search ${view === 'models' ? 'models or providers' : view}…`} value={search} onChange={e => setSearch(e.target.value)}/></div><span className="muted">{view === 'providers' ? data.providers.length + ' connections' : view === 'models' ? aliases.length + ' model aliases' : activeKeys.length + ' active keys'}</span></div>}
         {view === 'providers' && (data.providers.length ? <div className="provider-grid">{data.providers.filter(matches).map((provider: Row) => <section className="panel provider-card" key={provider.id}><div className="card-heading"><div className="provider-icon"><Server size={23}/></div><Badge tone={provider.enabled ? 'good' : 'neutral'}>{provider.enabled ? 'Enabled' : 'Disabled'}</Badge></div><h3>{provider.name}</h3><p className="mono endpoint">{provider.base_url}</p><div className="provider-details"><span>Protocol<strong>OpenAI compatible</strong></span><span>Credentials<strong>{provider.has_key ? 'Encrypted' : 'No API key'}</strong></span><span>Deployments<strong>{data.deployments.filter((d: Row) => d.provider_id === provider.id).length}</strong></span></div><div className="card-footer"><span className="muted">Added {date(provider.created_at)}</span>{owner && <button className="text-button" onClick={() => open('provider', provider)}><Pencil size={14}/> Configure</button>}</div></section>)}</div> : <section className="panel"><Empty icon={Server} title="Connect your first provider" text="Use your hosted API credentials, or connect Ollama and vLLM with an OpenAI-compatible endpoint." action={owner && <button className="button primary" onClick={() => open('provider')}><Plus size={16}/> Add provider</button>}/></section>)}
         {view === 'models' && <div className="stack">{aliases.length ? aliases.filter(alias => matches({ alias, deployments: data.deployments.filter((d: Row) => d.alias === alias) })).map(alias => {
@@ -100,7 +106,7 @@ function App() {
         {view === 'guardrails' && <Guardrails data={data} owner={owner} open={open}/>}
         {view === 'usage' && <UsageDashboard/>}
         {view === 'activity' && <ActivityView data={data}/>}
-        {view === 'team' && <section className="panel"><div className="table-wrap"><table><thead><tr><th>Member</th><th>Role</th><th>Joined</th>{owner && <th>Actions</th>}</tr></thead><tbody>{data.users.map((user: Row) => <tr key={user.id}><td><div className="member-cell"><span className="avatar">{user.name.slice(0, 1)}</span><span><strong>{user.name}{user.id === session.user.id && <span className="muted"> (you)</span>}</strong><small>{user.email}</small></span></div></td><td><Badge>{user.role === 'owner' ? 'Owner' : 'Viewer'}</Badge></td><td>{date(user.created_at)}</td>{owner && <td>{user.id !== session.user.id && <button className="text-button danger" onClick={() => open('confirm', { title: 'Remove this member?', text: 'Their dashboard sessions will end. Revoke any virtual keys you issued to them separately.', action: async () => { await api(`/admin/users/${user.id}`, undefined, 'DELETE'); setDialog(null); await refresh(); } })}>Remove</button>}</td>}</tr>)}</tbody></table></div><div className="panel-note">Members sign in with their own password. Virtual API keys are issued separately and do not grant dashboard access.</div></section>}
+        {view === 'team' && <TeamManager data={data} refresh={refresh}/>}
         {view === 'settings' && <Settings session={session} data={data} perform={perform} copy={copy} owner={owner}/>}
         <footer className="page-footer"><span>GATE / Your models. Your infrastructure.</span><span>All costs in USD · Estimates use configured prices</span></footer>
       </main>
@@ -248,7 +254,7 @@ function Editor({ dialog, data, close, saved, copy, useKey }: { dialog: Row; dat
     {kind === 'policy' && <PolicyFields draft={policyDraft} change={setPolicyDraft} assigned={data.keys.filter((key: Row) => !key.revoked && key.policy_id === row.id).length}/>}
     {kind === 'assignment' && <><p className="field-help">Assign <strong>{row.name}</strong> to one key. This replaces that key’s current policy for new requests.</p><Field label="Virtual key"><select value={assignmentKey} onChange={e => setAssignmentKey(e.target.value)} required><option value="">Choose a key</option>{data.keys.filter((key: Row) => !key.revoked && (!key.expires_at || key.expires_at > new Date().toISOString())).map((key: Row) => <option key={key.id} value={key.id}>{key.name} — {data.policies.find((p: Row) => p.id === key.policy_id)?.name ?? 'No policy'}</option>)}</select></Field><p className="field-help">Change or remove the assignment later in Virtual keys → Edit → Guardrail policy.</p></>}
 
-    {kind === 'user' && <><Field label="Email"><input name="email" type="email" required/></Field><Field label="Initial password" hint="Share this with the member through your usual secure channel."><input name="password" type="password" minLength={12} maxLength={200} autoComplete="new-password" required/></Field><Field label="Workspace role"><select name="role" defaultValue="viewer"><option value="viewer">Viewer — inspect and use playground</option><option value="owner">Owner — manage workspace and access</option></select></Field></>}
+    {kind === 'user' && <><Field label="Email"><input name="email" type="email" required/></Field><Field label="Initial password" hint="Share this with the member through your usual secure channel."><input name="password" type="password" minLength={12} maxLength={200} autoComplete="new-password" required/></Field><Field label="Workspace role"><select name="role" defaultValue="member"><option value="member">Member — assigned models and personal keys</option><option value="viewer">Viewer — read own activity only</option><option value="owner">Owner — manage workspace and access</option></select></Field></>}
     {error && <div className="form-error" role="alert">{error}</div>}
   </div><div className="modal-foot"><button type="button" className="button secondary" onClick={close}>Cancel</button><button className="button primary" disabled={busy}>{busy ? 'Saving…' : kind === 'confirm' ? 'Confirm' : kind === 'assignment' ? 'Assign policy' : edit ? 'Save changes' : kind === 'key' ? 'Create key' : 'Save'}</button></div></form></Modal>;
 }

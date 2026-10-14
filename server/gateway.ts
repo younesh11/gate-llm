@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { once } from 'node:events';
 import { z } from 'zod';
+import { accessFor, keyMember, checkMemberAllowance } from './members.ts';
 import { Store, HttpError, hash, now, type Row } from './store.ts';
 import { applyPolicy, GuardrailError, orderDeployments } from './guards.ts';
 import { safeError } from './operations.ts';
@@ -29,12 +30,13 @@ export function registerGateway(app: FastifyInstance, db: Store, options: { allo
     if (!authorization?.startsWith('Bearer ')) throw new HttpError(401, 'A virtual API key is required.', 'invalid_api_key');
     const key = db.get('SELECT * FROM virtual_keys WHERE token_hash=?', hash(authorization.slice(7)));
     if (!key || key.revoked || (key.expires_at && key.expires_at <= now())) throw new HttpError(401, 'This API key is invalid, expired or revoked.', 'invalid_api_key');
+    keyMember(db, key);
     return key;
   };
   app.get('/v1/models', async request => {
     const key = authenticate(request), allowed: string[] = JSON.parse(key.models);
     const rows = db.all('SELECT DISTINCT d.alias FROM deployments d JOIN providers p ON p.id=d.provider_id WHERE d.workspace_id=? AND d.enabled=1 AND p.enabled=1', key.workspace_id);
-    return { object: 'list', data: rows.filter(row => allowed.includes(row.alias)).map(row => ({ id: row.alias, object: 'model', created: 0, owned_by: 'relay' })) };
+    return { object: 'list', data: rows.filter(row => allowed.includes(row.alias) && (keyMember(db,key)?.user.role !== 'member' || accessFor(db,key.user_id).models.includes(row.alias))).map(row => ({ id: row.alias, object: 'model', created: 0, owned_by: 'relay' })) };
   });
 
   app.post('/v1/chat/completions', async (request, reply) => {
@@ -42,9 +44,12 @@ export function registerGateway(app: FastifyInstance, db: Store, options: { allo
     let body = chatBody.parse(request.body);
     if (body.max_tokens && body.max_completion_tokens) throw new HttpError(400, 'Use only one output-token limit.');
     if (!(JSON.parse(key.models) as string[]).includes(body.model)) throw new HttpError(403, 'This key cannot access the requested model.', 'model_not_allowed');
+    const member = keyMember(db,key,body.model);
+    checkMemberAllowance(db,key,0,0,Date.now());
+    const memberPolicy = member?.user.role === 'member' && member.access.policy_id ? db.get('SELECT * FROM policies WHERE id=? AND workspace_id=?',member.access.policy_id,key.workspace_id) : undefined;
     const policy = key.policy_id ? db.get('SELECT * FROM policies WHERE id=? AND workspace_id=?', key.policy_id, key.workspace_id) : undefined;
     let guardrail: string | null = null;
-    try { const guarded = applyPolicy(body, policy); body = guarded.body; guardrail = guarded.result; }
+    try { for (const rule of [memberPolicy, policy]) { const guarded = applyPolicy(body, rule); body = guarded.body; guardrail = guarded.result ?? guardrail; } }
     catch (error) {
       if (error instanceof GuardrailError) db.log({ id: requestId, workspace_id: key.workspace_id, key_id: key.id, key_name: key.name, model: body.model, status: 'blocked', http_status: 422, latency_ms: Date.now() - started, guardrail: error.result });
       throw error;
@@ -88,6 +93,12 @@ export function registerGateway(app: FastifyInstance, db: Store, options: { allo
     const admittedAt = now(), minuteWindow = Math.floor(Date.parse(admittedAt) / 60000);
     db.transaction(() => {
       const current = authenticate(request);
+      keyMember(db,current,body.model);
+      if (current.user_id !== key.user_id) throw new HttpError(409,'Key assignment changed. Retry the request.');
+      const freshMemberPolicyId = member?.user.role === 'member' ? accessFor(db,current.user_id).policy_id : null;
+      const freshMemberPolicy = freshMemberPolicyId ? db.get('SELECT * FROM policies WHERE id=? AND workspace_id=?',freshMemberPolicyId,current.workspace_id) : undefined;
+      if (JSON.stringify(freshMemberPolicy) !== JSON.stringify(memberPolicy)) throw new HttpError(409,'Your guardrail policy changed. Retry the request.');
+      checkMemberAllowance(db,current,reservation,tokenReservation,Date.parse(admittedAt));
       if (!(JSON.parse(current.models) as string[]).includes(body.model)) throw new HttpError(403, 'This key cannot access the requested model.', 'model_not_allowed');
       if (totalLimit > current.max_request_tokens) throw new HttpError(400, 'The key request limit changed. Retry with a lower combined-token limit.', 'request_token_limit_exceeded');
       const allocation = db.limitSummary(current, Date.parse(admittedAt));
@@ -101,6 +112,7 @@ export function registerGateway(app: FastifyInstance, db: Store, options: { allo
       db.run('DELETE FROM rate_windows WHERE window<?', minuteWindow - 3);
       db.run('UPDATE virtual_keys SET reserved=reserved+? WHERE id=?', reservation, key.id);
       db.run('INSERT INTO reservations (id,workspace_id,key_id,model,amount,created_at,token_amount,minute_window) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', requestId, key.workspace_id, key.id, body.model, reservation, admittedAt, tokenReservation, minuteWindow);
+      if (current.user_id) db.run('INSERT INTO member_holds VALUES (?,?)', requestId,current.user_id);
     });
 
     const controller = new AbortController();
@@ -118,6 +130,7 @@ export function registerGateway(app: FastifyInstance, db: Store, options: { allo
         db.run('UPDATE virtual_keys SET reserved=MAX(0,reserved-?), spent=spent+? WHERE id=?', reservation, cost, key.id);
         db.run('UPDATE rate_windows SET tokens=MAX(0,tokens-?)+? WHERE key_id=? AND window=?', tokenReservation, chargedTokens, key.id, minuteWindow);
         db.recordUsage(key.id, admittedAt, cost, chargedTokens, usage?.prompt_tokens ?? 0, usage?.completion_tokens ?? 0);
+        db.recordMemberUsage(db.get('SELECT user_id FROM member_holds WHERE reservation_id=?',requestId)?.user_id,admittedAt,cost,chargedTokens);
         db.run('DELETE FROM reservations WHERE id=?', requestId);
         db.log({ id: requestId, workspace_id: key.workspace_id, key_id: key.id, key_name: key.name, model: body.model, deployment_id: selected?.id ?? null, status, http_status: statusCode, latency_ms: Date.now() - started, input_tokens: usage?.prompt_tokens ?? 0, output_tokens: usage?.completion_tokens ?? 0, cost, estimated, guardrail, attempts, created_at: admittedAt });
       }); } catch (error) {
