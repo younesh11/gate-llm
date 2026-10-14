@@ -32,4 +32,18 @@ Local-only first-owner setup requires both a loopback connection and a Host of `
 
 Model access uses aliases configured in Models & routing. Every deployment under the same alias is eligible for its weighted share while enabled and outside cooldown. A key must explicitly allow the alias. Bedrock models that require Converse/IAM cannot be configured as ordinary compatible endpoints in this release.
 
-For Compose, `.env` is an interpolation file, not a wholesale container environment file. Only variables explicitly listed in `compose.yaml` are passed through. `HOST`, `PORT`, `DATA_DIR` and `ALLOW_REMOTE_SETUP` in `.env.example` are for direct Node/npm/pip execution; Docker uses its fixed internal listener/data path and enables setup through container NAT. Start with `./scripts/start.sh`. Apply environment changes with `docker compose up -d --wait`, not just restart. PostgreSQL integration is still pending; `DATABASE_URL` does not switch storage.
+For Compose, `.env` is an interpolation file, not a wholesale container environment file. Only variables explicitly listed in `compose.yaml` are passed through. `HOST`, `PORT`, `DATA_DIR` and `ALLOW_REMOTE_SETUP` in `.env.example` are for direct Node/npm/pip execution; Docker uses its fixed internal listener/data path and enables setup through container NAT. Start with `./scripts/start.sh`. Apply environment changes with `docker compose up -d --wait`, not just restart. For PostgreSQL from source, use `./scripts/start.sh --postgres`, which reads `.env.postgres` and `compose.postgres.yaml`. Direct Node/npm/pip uses `GATE_STORAGE=postgres` plus `DATABASE_URL`; see [PostgreSQL setup](POSTGRESQL.md) for TLS, pool limits and migration. Supplying a database URL without selecting PostgreSQL is rejected.
+
+### PostgreSQL variables (unreleased)
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `GATE_STORAGE` | `sqlite` | Select `sqlite` or `postgres` explicitly |
+| `DATABASE_URL` | none | Required PostgreSQL connection URL; no query parameters |
+| `DATABASE_SSL_MODE` | `verify-full` | Verified TLS; `disable` only for trusted private networks |
+| `DATABASE_SSL_CA_FILE` | none | Optional private CA PEM file |
+| `DATABASE_POOL_MAX` | `10` | Total connections, 2–100; one reserved for ownership |
+| `DATABASE_POOL_WAITING_MAX` | `100` | Maximum queued connection acquisitions, 0–1000 |
+| `POSTGRES_PASSWORD` | generated | Local Compose database password in `.env.postgres` |
+
+PostgreSQL `DATA_DIR` holds the provider encryption key; it must be separate from SQLite data and retained with database backups. One gateway process per PostgreSQL database is enforced.

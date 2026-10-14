@@ -1,6 +1,6 @@
 # Production architecture and qualification plan
 
-Status: implementation started; production path and capacity qualification remain incomplete. Updated 2026-10-14. The [first PostgreSQL foundation increment](POSTGRES_FOUNDATION.md) adds a tested async pool, migrations and quota primitives; the running gateway still uses SQLite.
+Status: implementation started; production path and capacity qualification remain incomplete. Updated 2026-10-14. The [PostgreSQL application integration](POSTGRESQL.md) now adds async handlers, persistent identity/configuration/accounting, single-process ownership, controlled import and Compose setup. The original local SQLite installation is not automatically migrated. Horizontal scaling and capacity qualification remain outstanding.
 
 GATE's intended deployment routes requests from applications serving thousands of end users. A GATE member creates an application key; the application's backend uses that key on behalf of its users. Application users do not require GATE dashboard accounts. The current SQLite implementation is an internal beta. Functional tests, container packaging and working permissions do not establish production capacity. PostgreSQL and multi-instance correctness take priority over further catalog or dashboard features.
 
@@ -29,7 +29,7 @@ These targets are proposed gates and may require measured adjustment. Provider q
 
 | Evidence | Consequence | Required change |
 | --- | --- | --- |
-| `server/store.ts`: synchronous `DatabaseSync`, `BEGIN IMMEDIATE`, SQL called directly throughout handlers | Storage work blocks the Node event loop; correctness depends on a single SQLite writer | Async domain repositories and PostgreSQL transactions |
+| Async application storage now supports PostgreSQL; SQLite remains a compatibility backend | PostgreSQL short writes still serialize; history sums remain in admission | Per-account/period repositories and finer-grained transaction locks |
 | `server/store.ts` and `server/directory-lock.ts`: directory ownership and recovery of all outstanding reservations on startup | A second live instance is unsupported; global recovery could settle another instance's active work | Per-request ownership leases, fencing and idempotent recovery |
 | `server/gateway.ts`: hard-coded eight in-flight reservations per key | One application key cannot serve high concurrent application traffic | Owner-configured application/key concurrency, constrained by workspace/provider capacity and shared across replicas |
 | `server/upstream.ts`: 16 connections per origin | Long streams can occupy the pool and make later requests wait | Configurable bounded pools, provider concurrency admission and explicit overload rejection |

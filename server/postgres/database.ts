@@ -1,4 +1,5 @@
 import { Pool, type PoolClient, type QueryResultRow } from 'pg';
+import { HttpError } from '../store.ts';
 
 export class StorageError extends Error {
   constructor(public readonly code: 'unavailable' | 'busy' | 'conflict' | 'invalid' | 'internal') {
@@ -15,6 +16,9 @@ export type PostgresOptions = {
   // Explicit opt-in for local development only; TLS verification is otherwise required.
   localPlaintext?: boolean;
   ca?: string;
+  // Explicit opt-in for a private Compose network; never inferred from a URL.
+  privateNetworkPlaintext?: boolean;
+  safeNumbers?: boolean;
 };
 function safeError(error: unknown) {
   if (error instanceof StorageError) return error;
@@ -29,12 +33,14 @@ function bounded(value: number, min: number, max: number) {
   return value;
 }
 
-/** Async PostgreSQL foundation. Not yet wired into the SQLite application handlers. */
+/** Bounded async pool shared by application storage and quota primitives. */
 export class PostgresDatabase {
   private readonly pool: Pool;
   private readonly maxWaiting: number;
   private closed = false;
+  private readonly safeNumbers: boolean;
   constructor(options: PostgresOptions) {
+    this.safeNumbers = !!options.safeNumbers;
     let url: URL;
     try { url = new URL(options.url); } catch { throw new StorageError('invalid'); }
     if (!['postgres:', 'postgresql:'].includes(url.protocol) || !url.hostname || !url.pathname.slice(1) || url.search || url.hash) throw new StorageError('invalid');
@@ -42,7 +48,7 @@ export class PostgresDatabase {
     this.maxWaiting = bounded(options.maxWaiting ?? 100, 0, 1000);
     this.pool = new Pool({
       connectionString: options.url,
-      ssl: options.localPlaintext ? false : { rejectUnauthorized: true, ...(options.ca ? { ca: options.ca } : {}) },
+      ssl: options.localPlaintext || options.privateNetworkPlaintext ? false : { rejectUnauthorized: true, ...(options.ca ? { ca: options.ca } : {}) },
       max: bounded(options.maxConnections ?? 10, 1, 100),
       connectionTimeoutMillis: 2000, idleTimeoutMillis: 10000,
       statement_timeout: 5000, lock_timeout: 2000, idle_in_transaction_session_timeout: 5000,
@@ -62,7 +68,20 @@ export class PostgresDatabase {
     let broken = false, active = true;
     const tx: SqlTransaction = { query: async <R extends QueryResultRow>(text: string, values?: unknown[]) => {
       if (!active) throw new StorageError('invalid');
-      try { return (await client.query<R>(text, values)).rows; } catch (error) { throw safeError(error); }
+      try {
+        const result = await client.query<R>(text, values);
+        if (this.safeNumbers && result.rows) for (const field of result.fields) {
+          if (![20, 1700].includes(field.dataTypeID)) continue;
+          for (const row of result.rows) {
+            const value = row[field.name];
+            if (value === null) continue;
+            const number = Number(value);
+            if (!Number.isFinite(number) || Math.abs(number) > Number.MAX_SAFE_INTEGER || /^-?\d+(\.0+)?$/.test(String(value)) && !Number.isSafeInteger(number)) throw new StorageError('invalid');
+            (row as QueryResultRow)[field.name] = number;
+          }
+        }
+        return result.rows;
+      } catch (error) { throw safeError(error); }
     } };
     try {
       await client.query('BEGIN');
@@ -73,9 +92,26 @@ export class PostgresDatabase {
     } catch (error) {
       try { await client.query('ROLLBACK'); } catch { broken = true; }
       // Domain errors from operation are intentionally preserved; transport errors are sanitized.
-      if (error instanceof StorageError || (error instanceof Error && error.name === 'QuotaError')) throw error;
+      if (error instanceof StorageError || error instanceof HttpError || (error instanceof Error && error.name === 'QuotaError')) throw error;
       throw safeError(error);
     } finally { active = false; client.release(broken); }
+  }
+  /** Pin a session lock for the single-instance application/recovery owner. */
+  async exclusiveSession(lockId: number, onLost: () => void) {
+    const client = await this.acquire();
+    let released = false, backendPid = 0;
+    const lost = () => { onLost(); };
+    client.on('error', lost);
+    try {
+      const result = await client.query('SELECT pg_try_advisory_lock($1) AS acquired, pg_backend_pid() AS pid', [lockId]);
+      backendPid = result.rows[0].pid;
+      if (!result.rows[0].acquired) throw new StorageError('conflict');
+    } catch (error) { client.removeListener('error', lost); client.release(true); throw safeError(error); }
+    return {
+      backendPid,
+      ping: async () => { try { await client.query('SELECT 1'); } catch { onLost(); throw new StorageError('unavailable'); } },
+      close: () => { if (!released) { released = true; client.removeListener('error', lost); client.release(true); } }
+    };
   }
   async ready() { await this.transaction(async tx => { await tx.query('SELECT 1'); }); }
   async close() { if (!this.closed) { this.closed = true; await this.pool.end(); } }

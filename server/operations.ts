@@ -1,7 +1,8 @@
+import { AppStore } from './storage.ts';
 import { LogController, type FastifyInstance, type FastifyRequest } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { ZodError } from 'zod';
-import { HttpError, type Store } from './store.ts';
+import { HttpError } from './store.ts';
 import { version } from './meta.ts';
 
 export const logLevels = ['silent', 'fatal', 'error', 'warn', 'info', 'debug', 'trace'] as const;
@@ -40,7 +41,7 @@ export function loggingOptions(level: LogLevel = 'info', stream?: LogDestination
   };
 }
 
-export function registerOperations(app: FastifyInstance, db: Store) {
+export function registerOperations(app: FastifyInstance, db: AppStore) {
   let draining = false;
   app.addHook('preClose', async () => { draining = true; app.log.info({ event: 'gateway_draining' }); });
   app.addHook('onRequest', async (request, reply) => { reply.header('x-request-id', request.id); });
@@ -58,7 +59,7 @@ export function registerOperations(app: FastifyInstance, db: Store) {
     reply.header('Cache-Control', 'no-store');
     if (draining) return reply.code(503).send({ status: 'draining', version });
     try {
-      db.checkReady();
+      (await db.checkReady());
       return { status: 'ready', version, checks: { database: 'ok' } };
     } catch (error) {
       request.log.error({ event: 'readiness_failed', error: safeError(error) });

@@ -18,7 +18,7 @@ try {
   const binding=docker(['port',name,'5432/tcp']).trim();
   if(!/^127\.0\.0\.1:\d+$/.test(binding))throw new Error('Unexpected test database binding.');
   const url=`postgresql://postgres:${password}@${binding}/gate_test`;
-  execFileSync(process.execPath,['--import','tsx','--test','tests/postgres/storage.test.ts'],{stdio:'inherit',env:{...process.env,GATE_TEST_POSTGRES_URL:url},timeout:120000});
+  execFileSync(process.execPath,['--import','tsx','--test','tests/postgres/storage.test.ts','tests/postgres/application.test.ts'],{stdio:'inherit',env:{...process.env,GATE_TEST_POSTGRES_URL:url,GATE_TEST_POSTGRES_CONTAINER:name},timeout:120000});
 } catch {
   console.error('PostgreSQL integration tests failed. Check Docker availability and the test output.');
   process.exitCode=1;

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
 import { version } from './meta.ts';
-import { dataDirectory, loadEnvironment } from './config.ts';
+import { dataDirectory, loadEnvironment, postgresConfiguration } from './config.ts';
 
 const help = `GATE ${version} — self-hosted LLM gateway
 
@@ -9,6 +9,7 @@ Usage: gate-llm [serve] [options]
        gate-llm backup --data-dir <directory> --output <new-directory>
        gate-llm verify-backup --input <backup-directory>
        gate-llm restore --input <backup-directory> --data-dir <new-directory>
+       gate-llm migrate-sqlite --input <verified-backup> --data-dir <new-directory> --env-file <postgres-env>
        gate-llm reset-password --data-dir <directory> --email <account-email>
 
 Stop the gateway before backup or password reset. Restore never overwrites a directory.
@@ -39,6 +40,7 @@ try {
     const command = positionals[0] ?? 'serve';
     const allowed: Record<string, string[]> = {
       serve: ['host', 'port', 'data-dir', 'env-file', 'allow-private-upstreams', 'allow-remote-setup', 'secure-cookie', 'log-level'],
+      'migrate-sqlite': ['input', 'data-dir', 'env-file'],
       backup: ['data-dir', 'env-file', 'output'], 'verify-backup': ['input'],
       restore: ['input', 'data-dir'], 'reset-password': ['data-dir', 'env-file', 'email', 'password-stdin'],
     };
@@ -47,6 +49,13 @@ try {
     if (command === 'serve') {
       const { start } = await import('./runtime.ts');
       await start({ host: values.host, port: values.port, dataDir: values['data-dir'], envFile: values['env-file'], allowPrivate: values['allow-private-upstreams'], allowRemoteSetup: values['allow-remote-setup'], secureCookie: values['secure-cookie'], logLevel: values['log-level'] });
+    } else if (command === 'migrate-sqlite') {
+      if (!values.input || !values['data-dir']) throw new Error('Migration requires --input and an explicit new --data-dir.');
+      loadEnvironment(values['env-file']);
+      const postgres = postgresConfiguration();
+      if (!postgres) throw new Error('Migration requires GATE_STORAGE=postgres and DATABASE_URL.');
+      const { importSqlite } = await import('./postgres/import-sqlite.ts');
+      console.log(JSON.stringify(await importSqlite(values.input, values['data-dir'], postgres)));
     } else {
       if (command === 'backup' && !values.output) throw new Error('Backup requires --output pointing to a new directory.');
       if (command === 'verify-backup' && !values.input) throw new Error('Verification requires --input.');
@@ -55,12 +64,18 @@ try {
       const { backupState, verifyBackup, restoreState, resetPassword } = await import('./maintenance.ts');
       if (['backup', 'reset-password'].includes(command)) loadEnvironment(values['env-file']);
       const directory = dataDirectory(values['data-dir']);
+      const postgres = ['backup', 'reset-password'].includes(command) ? postgresConfiguration() : undefined;
+      if (command === 'backup' && postgres) throw new Error('This maintenance command is SQLite-only. See docs/POSTGRESQL.md for PostgreSQL backup and recovery.');
       if (command === 'backup') console.log(JSON.stringify(backupState(directory, values.output!)));
       else if (command === 'verify-backup') { const manifest = verifyBackup(values.input!); console.log(JSON.stringify({ status: 'backup_verified', ...manifest })); }
       else if (command === 'restore') console.log(JSON.stringify(restoreState(values.input!, directory)));
       else {
         const { readPassword } = await import('./password-input.ts');
-        console.log(JSON.stringify(resetPassword(directory, values.email!, await readPassword(values['password-stdin'] ?? false))));
+        const password = await readPassword(values['password-stdin'] ?? false);
+        if (postgres) {
+          const { resetPostgresPassword } = await import('./postgres/maintenance.ts');
+          console.log(JSON.stringify(await resetPostgresPassword(directory, postgres, values.email!, password)));
+        } else console.log(JSON.stringify(resetPassword(directory, values.email!, password)));
       }
     }
   }

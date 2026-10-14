@@ -1,0 +1,61 @@
+# Independent PostgreSQL installation. Existing SQLite volumes are never reused.
+name: gate-llm-postgres
+services:
+  relay:
+    image: ${GATE_IMAGE:-gate-llm:local}
+    build:
+      context: .
+      args:
+        VERSION: ${GATE_VERSION:-0.2.2}
+        REVISION: ${GATE_REVISION:-local}
+    ports:
+      - "${GATE_BIND:-127.0.0.1}:${GATE_PORT:-4310}:4310"
+    environment:
+      GATE_STORAGE: postgres
+      DATABASE_URL: postgresql://gate:${POSTGRES_PASSWORD:?Run ./scripts/start.sh --postgres to generate a password}@postgres:5432/gate
+      # Explicitly unencrypted only within this private Compose network.
+      DATABASE_SSL_MODE: disable
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
+      DATABASE_POOL_WAITING_MAX: ${DATABASE_POOL_WAITING_MAX:-100}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ALLOW_PRIVATE_UPSTREAMS: ${ALLOW_PRIVATE_UPSTREAMS:-false}
+      ALLOW_REMOTE_SETUP: "true"
+      AWS_REGION: ${AWS_REGION:-eu-west-2}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+    volumes:
+      - gate-secrets:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 150s
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: gate
+      POSTGRES_USER: gate
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run ./scripts/start.sh --postgres first}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -U gate -d gate']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    stop_grace_period: 60s
+volumes:
+  gate-secrets:
+  postgres-data:

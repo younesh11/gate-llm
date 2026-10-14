@@ -1,4 +1,4 @@
-import { dataDirectory, loadEnvironment } from './config.ts';
+import { dataDirectory, loadEnvironment, postgresConfiguration } from './config.ts';
 import { createApp } from './app.ts';
 import { parseLogLevel } from './operations.ts';
 
@@ -9,7 +9,7 @@ export async function start(options: RuntimeOptions = {}) {
   const port = Number(options.port ?? process.env.PORT ?? 4310);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('PORT must be an integer between 0 and 65535.');
   const directory = dataDirectory(options.dataDir);
-  const { app } = await createApp({ directory, allowPrivate: options.allowPrivate ?? process.env.ALLOW_PRIVATE_UPSTREAMS === 'true', secureCookie: options.secureCookie ?? process.env.COOKIE_SECURE === 'true', allowRemoteSetup: options.allowRemoteSetup ?? process.env.ALLOW_REMOTE_SETUP === 'true', logLevel: parseLogLevel(options.logLevel ?? process.env.LOG_LEVEL) });
+  const { app } = await createApp({ directory, postgres: postgresConfiguration(), allowPrivate: options.allowPrivate ?? process.env.ALLOW_PRIVATE_UPSTREAMS === 'true', secureCookie: options.secureCookie ?? process.env.COOKIE_SECURE === 'true', allowRemoteSetup: options.allowRemoteSetup ?? process.env.ALLOW_REMOTE_SETUP === 'true', logLevel: parseLogLevel(options.logLevel ?? process.env.LOG_LEVEL) });
   try { await app.listen({ port, host }); } catch (error) { await app.close(); throw error; }
   const address = app.server.address();
   app.log.info({ event: 'gateway_started', address: `http://${host}:${typeof address === 'object' && address ? address.port : port}` }, 'GATE is ready');

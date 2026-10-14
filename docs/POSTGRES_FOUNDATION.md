@@ -1,6 +1,6 @@
 # PostgreSQL foundation — development increment
 
-Implemented locally on 2026-10-14. This is an internal storage foundation, **not a PostgreSQL-backed gateway release**. The running dashboard, authentication, model routing and existing usage continue to use SQLite. Setting `DATABASE_URL` does not switch the gateway to PostgreSQL. No user data has been migrated.
+The initial internal bigint quota prototype is described below. The application is now connected to PostgreSQL through the separate `gate_app` schema; see [PostgreSQL setup, migration and current limits](POSTGRESQL.md). The prototype's `gate_core` schema is not the runtime ledger. No existing installation is switched or migrated automatically.
 
 ## Implemented
 
@@ -23,13 +23,8 @@ The test runner creates a uniquely named disposable PostgreSQL container with a 
 
 The tests exercise concurrent migrations, transaction rollback/lifetime, 100 competing reservations through two independent pools against one application key plus one member budget, duplicate admission and settlement, workspace boundaries, disabled accounts, independent token limits, exact bigint values, excess actual usage, bounded pool waiting and migration-history validation. This is database correctness evidence, not a gateway throughput or multi-replica certification.
 
-## Required before production use
+## Next production stages
 
-1. Port identity/configuration, authorization and every gateway/admin/reporting handler to async repositories. Introduce explicit production configuration; never silently fall back to SQLite on PostgreSQL failure.
-2. Complete the schema and controlled SQLite migration, including encryption-key handling, existing balances, attribution, backup/restore and maintenance commands. Existing workspace IDs include `default`; map them explicitly because the new internal schema uses UUIDs.
-3. Wire admission/settlement into the real request path. Add owner-controlled quota mutations, calendar-period selection, expiry/revocation, route/policy/pricing snapshots and corresponding race tests.
-4. Add lease ownership/fencing and idempotent crash recovery before allowing multiple live gateways. Pending reservations in this foundation are deliberately not recovered automatically.
-5. Add shared rate/concurrency controls, provider pool configuration, overload rejection and operational metrics. The current gateway's eight-per-key and 16-per-origin limits remain unchanged.
-6. Finish Docker production configuration, separate migration/runtime identities, TLS and secret rotation, and the measured [production qualification gates](PRODUCTION_PLAN.md).
+The application now has async storage, PostgreSQL configuration, single-instance ownership/recovery, Docker setup and a verified SQLite-backup importer. Application IDs remain text, preserving existing workspaces without UUID remapping. The earlier primitives above are not wired to the HTTP request path; current runtime admission and settlement operate atomically on the application schema.
 
-There is deliberately no public API or end-user switch exposing this incomplete storage path yet.
+Next: replace serialized writes and history sums with per-account/period repositories, integrate exact bigint/decimal accounting throughout the API, add distributed leases and shared rate/concurrency controls, test backup restore and failure modes operationally, separate migration/runtime identities, and pass the measured [production qualification gates](PRODUCTION_PLAN.md). Multiple live gateways remain explicitly prohibited until their recovery and coordination model is implemented.

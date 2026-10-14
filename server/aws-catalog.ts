@@ -27,12 +27,12 @@ function catalogError(error: unknown): HttpError {
   return new HttpError(502, 'Could not load the AWS catalog. Check the region, credentials and server connection.', 'aws_catalog_unavailable');
 }
 
-export function registerAwsCatalog(app: FastifyInstance, workspaceFor: (request: FastifyRequest) => string, factory: CatalogClientFactory = awsCatalogClient, prices: PriceLoader = createPriceLoader()) {
+export function registerAwsCatalog(app: FastifyInstance, workspaceFor: (request: FastifyRequest) => string | Promise<string>, factory: CatalogClientFactory = awsCatalogClient, prices: PriceLoader = createPriceLoader()) {
   const limits = new Map<string, { until: number; requests: number; active: boolean }>();
   const controllers = new Set<AbortController>();
   app.addHook('onClose', async () => { for (const controller of controllers) controller.abort(); });
   app.post('/api/admin/aws/catalog', async (request, reply) => {
-    const input = catalogInput.parse(request.body), workspace = workspaceFor(request), now = Date.now();
+    const input = catalogInput.parse(request.body), workspace = await workspaceFor(request), now = Date.now();
     for (const [key, value] of limits) if (!value.active && value.until <= now) limits.delete(key);
     const limit = limits.get(workspace) ?? { until: now + 60000, requests: 0, active: false };
     if (limit.active || limit.requests >= 10) throw new HttpError(429, 'A catalog lookup is running or the refresh limit has been reached. Wait before retrying.', 'aws_catalog_rate_limit');

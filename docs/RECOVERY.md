@@ -1,5 +1,7 @@
 # Backup, restore and account recovery
 
+For PostgreSQL use [PostgreSQL backup, restore and password recovery](POSTGRESQL.md). The SQLite backup commands below do not back up PostgreSQL.
+
 GATE 0.2.2 adds offline maintenance commands for a single instance. Use the same release that wrote the data (schema 3 for this release). Commands print a JSON result on success and exit nonzero on failure. They work through the npm CLI, Python launcher and Docker entrypoint. Stop the gateway and disable automatic restarts before backup or password reset; an active owner causes the command to refuse access.
 
 The unreleased token-counting build uses schema 4 and accepts both schema 3 and 4 backups. Verification checks that the manifest matches the database schema. Backup, restore and password recovery never migrate the source; a restored schema-3 copy migrates on normal startup. Published v0.2.2 does not support schema 4.

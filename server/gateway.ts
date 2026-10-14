@@ -1,8 +1,9 @@
+import { AppStore } from './storage.ts';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { once } from 'node:events';
 import { z } from 'zod';
 import { accessFor, keyMember, checkMemberAllowance } from './members.ts';
-import { Store, HttpError, hash, now, type Row } from './store.ts';
+import { HttpError, hash, now, type Row } from './store.ts';
 import { applyPolicy, GuardrailError, orderDeployments } from './guards.ts';
 import { safeError } from './operations.ts';
 import { canCountText, countVllmInput, estimateInputTokens } from './token-counting.ts';
@@ -21,40 +22,41 @@ const chatBody = z.object({
   stream_options: z.object({ include_usage: z.boolean().optional() }).optional(), n: z.literal(1).optional()
 }).strict();
 
-export function registerGateway(app: FastifyInstance, db: Store, options: { allowPrivate: boolean; timeoutMs?: number; random?: () => number }) {
+export function registerGateway(app: FastifyInstance, db: AppStore, options: { allowPrivate: boolean; timeoutMs?: number; random?: () => number }) {
   const upstream = createUpstreamClient(options.allowPrivate);
   app.addHook('onClose', async () => { await upstream.close(); });
   const counting = new Map<string, { window: number; calls: number; active: number }>();
-  const authenticate = (request: FastifyRequest): Row => {
+  const authenticate = async (request: FastifyRequest): Promise<Row> => {
     const authorization = request.headers.authorization;
     if (!authorization?.startsWith('Bearer ')) throw new HttpError(401, 'A virtual API key is required.', 'invalid_api_key');
-    const key = db.get('SELECT * FROM virtual_keys WHERE token_hash=?', hash(authorization.slice(7)));
+    const key = (await db.get('SELECT * FROM virtual_keys WHERE token_hash=?', hash(authorization.slice(7))));
     if (!key || key.revoked || (key.expires_at && key.expires_at <= now())) throw new HttpError(401, 'This API key is invalid, expired or revoked.', 'invalid_api_key');
-    keyMember(db, key);
+    (await keyMember(db, key));
     return key;
   };
   app.get('/v1/models', async request => {
-    const key = authenticate(request), allowed: string[] = JSON.parse(key.models);
-    const rows = db.all('SELECT DISTINCT d.alias FROM deployments d JOIN providers p ON p.id=d.provider_id WHERE d.workspace_id=? AND d.enabled=1 AND p.enabled=1', key.workspace_id);
-    return { object: 'list', data: rows.filter(row => allowed.includes(row.alias) && (keyMember(db,key)?.user.role !== 'member' || accessFor(db,key.user_id).models.includes(row.alias))).map(row => ({ id: row.alias, object: 'model', created: 0, owned_by: 'relay' })) };
+    const key = (await authenticate(request)), allowed: string[] = JSON.parse(key.models);
+    const rows = (await db.all('SELECT DISTINCT d.alias FROM deployments d JOIN providers p ON p.id=d.provider_id WHERE d.workspace_id=? AND d.enabled=1 AND p.enabled=1', key.workspace_id));
+    const member = await keyMember(db,key);
+    return { object: 'list', data: rows.filter(row => allowed.includes(row.alias) && (member?.user.role !== 'member' || member.access.models.includes(row.alias))).map(row => ({ id: row.alias, object: 'model', created: 0, owned_by: 'relay' })) };
   });
 
   app.post('/v1/chat/completions', async (request, reply) => {
-    const started = Date.now(), requestId = request.id, key = authenticate(request);
+    const started = Date.now(), requestId = request.id, key = (await authenticate(request));
     let body = chatBody.parse(request.body);
     if (body.max_tokens && body.max_completion_tokens) throw new HttpError(400, 'Use only one output-token limit.');
     if (!(JSON.parse(key.models) as string[]).includes(body.model)) throw new HttpError(403, 'This key cannot access the requested model.', 'model_not_allowed');
-    const member = keyMember(db,key,body.model);
-    checkMemberAllowance(db,key,0,0,Date.now());
-    const memberPolicy = member?.user.role === 'member' && member.access.policy_id ? db.get('SELECT * FROM policies WHERE id=? AND workspace_id=?',member.access.policy_id,key.workspace_id) : undefined;
-    const policy = key.policy_id ? db.get('SELECT * FROM policies WHERE id=? AND workspace_id=?', key.policy_id, key.workspace_id) : undefined;
+    const member = (await keyMember(db,key,body.model));
+    (await checkMemberAllowance(db,key,0,0,Date.now()));
+    const memberPolicy = member?.user.role === 'member' && member.access.policy_id ? (await db.get('SELECT * FROM policies WHERE id=? AND workspace_id=?',member.access.policy_id,key.workspace_id)) : undefined;
+    const policy = key.policy_id ? (await db.get('SELECT * FROM policies WHERE id=? AND workspace_id=?', key.policy_id, key.workspace_id)) : undefined;
     let guardrail: string | null = null;
     try { for (const rule of [memberPolicy, policy]) { const guarded = applyPolicy(body, rule); body = guarded.body; guardrail = guarded.result ?? guardrail; } }
     catch (error) {
-      if (error instanceof GuardrailError) db.log({ id: requestId, workspace_id: key.workspace_id, key_id: key.id, key_name: key.name, model: body.model, status: 'blocked', http_status: 422, latency_ms: Date.now() - started, guardrail: error.result });
+      if (error instanceof GuardrailError) (await db.log({ id: requestId, workspace_id: key.workspace_id, key_id: key.id, key_name: key.name, model: body.model, status: 'blocked', http_status: 422, latency_ms: Date.now() - started, guardrail: error.result }));
       throw error;
     }
-    const candidates = orderDeployments(db.all('SELECT d.*, p.base_url, p.secret, p.token_counting FROM deployments d JOIN providers p ON p.id=d.provider_id WHERE d.workspace_id=? AND d.alias=? AND d.enabled=1 AND p.enabled=1 AND d.cooldown_until<=?', key.workspace_id, body.model, Date.now()), options.random).slice(0, 3);
+    const candidates = orderDeployments((await db.all('SELECT d.*, p.base_url, p.secret, p.token_counting FROM deployments d JOIN providers p ON p.id=d.provider_id WHERE d.workspace_id=? AND d.alias=? AND d.enabled=1 AND p.enabled=1 AND d.cooldown_until<=?', key.workspace_id, body.model, Date.now())), options.random).slice(0, 3);
     if (!candidates.length) throw new HttpError(503, 'No available deployment for this model.', 'no_deployments');
     const totalLimit = body.max_total_tokens ?? key.max_request_tokens;
     if (totalLimit > key.max_request_tokens) throw new HttpError(400, `This key allows up to ${key.max_request_tokens} combined input + output tokens per request.`, 'request_token_limit_exceeded');
@@ -91,49 +93,49 @@ export function registerGateway(app: FastifyInstance, db: Store, options: { allo
     const reservation = Math.ceil(Math.max(...candidates.map(row => inputEstimate * row.input_price + maxOutput * row.output_price)));
     const tokenReservation = inputEstimate + maxOutput;
     const admittedAt = now(), minuteWindow = Math.floor(Date.parse(admittedAt) / 60000);
-    db.transaction(() => {
-      const current = authenticate(request);
-      keyMember(db,current,body.model);
+    (await db.transaction(async () => {
+      const current = (await authenticate(request));
+      (await keyMember(db,current,body.model));
       if (current.user_id !== key.user_id) throw new HttpError(409,'Key assignment changed. Retry the request.');
-      const freshMemberPolicyId = member?.user.role === 'member' ? accessFor(db,current.user_id).policy_id : null;
-      const freshMemberPolicy = freshMemberPolicyId ? db.get('SELECT * FROM policies WHERE id=? AND workspace_id=?',freshMemberPolicyId,current.workspace_id) : undefined;
+      const freshMemberPolicyId = member?.user.role === 'member' ? (await accessFor(db,current.user_id)).policy_id : null;
+      const freshMemberPolicy = freshMemberPolicyId ? (await db.get('SELECT * FROM policies WHERE id=? AND workspace_id=?',freshMemberPolicyId,current.workspace_id)) : undefined;
       if (JSON.stringify(freshMemberPolicy) !== JSON.stringify(memberPolicy)) throw new HttpError(409,'Your guardrail policy changed. Retry the request.');
-      checkMemberAllowance(db,current,reservation,tokenReservation,Date.parse(admittedAt));
+      (await checkMemberAllowance(db,current,reservation,tokenReservation,Date.parse(admittedAt)));
       if (!(JSON.parse(current.models) as string[]).includes(body.model)) throw new HttpError(403, 'This key cannot access the requested model.', 'model_not_allowed');
       if (totalLimit > current.max_request_tokens) throw new HttpError(400, 'The key request limit changed. Retry with a lower combined-token limit.', 'request_token_limit_exceeded');
-      const allocation = db.limitSummary(current, Date.parse(admittedAt));
+      const allocation = (await db.limitSummary(current, Date.parse(admittedAt)));
       if (current.budget !== null && allocation.period_spent + allocation.money_reserved + reservation > current.budget) throw new HttpError(429, 'Key budget cannot cover this request. Reduce the output limit or increase the budget.', 'budget_exceeded');
       if (current.token_limit !== null && allocation.tokens_used + allocation.tokens_reserved + tokenReservation > current.token_limit) throw new HttpError(429, 'Token allowance cannot cover this request. Reduce the prompt/output limit, increase the allowance, or wait for its reset.', 'token_quota_exceeded');
-      if (db.get('SELECT COUNT(*) AS count FROM reservations WHERE key_id=?', key.id)!.count >= 8) throw new HttpError(429, 'Too many concurrent requests for this key.', 'concurrency_limit');
-      const rate = db.get('SELECT requests,tokens FROM rate_windows WHERE key_id=? AND window=?', key.id, minuteWindow);
+      if ((await db.get('SELECT COUNT(*) AS count FROM reservations WHERE key_id=?', key.id))!.count >= 8) throw new HttpError(429, 'Too many concurrent requests for this key.', 'concurrency_limit');
+      const rate = (await db.get('SELECT requests,tokens FROM rate_windows WHERE key_id=? AND window=?', key.id, minuteWindow));
       if ((rate?.requests ?? 0) >= current.rpm) throw new HttpError(429, 'Requests-per-minute limit exceeded.', 'rate_limit_exceeded');
       if (current.tpm !== null && (rate?.tokens ?? 0) + tokenReservation > current.tpm) throw new HttpError(429, 'Tokens-per-minute limit cannot cover this request. Reduce the prompt/output limit or wait for the next minute.', 'token_rate_limit_exceeded');
-      db.run('INSERT INTO rate_windows (key_id,window,requests,tokens) VALUES (?, ?, 1, ?) ON CONFLICT(key_id,window) DO UPDATE SET requests=requests+1,tokens=tokens+excluded.tokens', key.id, minuteWindow, tokenReservation);
-      db.run('DELETE FROM rate_windows WHERE window<?', minuteWindow - 3);
-      db.run('UPDATE virtual_keys SET reserved=reserved+? WHERE id=?', reservation, key.id);
-      db.run('INSERT INTO reservations (id,workspace_id,key_id,model,amount,created_at,token_amount,minute_window) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', requestId, key.workspace_id, key.id, body.model, reservation, admittedAt, tokenReservation, minuteWindow);
-      if (current.user_id) db.run('INSERT INTO member_holds VALUES (?,?)', requestId,current.user_id);
-    });
+      (await db.run('INSERT INTO rate_windows (key_id,window,requests,tokens) VALUES (?, ?, 1, ?) ON CONFLICT(key_id,window) DO UPDATE SET requests=rate_windows.requests+1,tokens=rate_windows.tokens+excluded.tokens', key.id, minuteWindow, tokenReservation));
+      (await db.run('DELETE FROM rate_windows WHERE window<?', minuteWindow - 3));
+      (await db.run('UPDATE virtual_keys SET reserved=reserved+? WHERE id=?', reservation, key.id));
+      (await db.run('INSERT INTO reservations (id,workspace_id,key_id,model,amount,created_at,token_amount,minute_window) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', requestId, key.workspace_id, key.id, body.model, reservation, admittedAt, tokenReservation, minuteWindow));
+      if (current.user_id) (await db.run('INSERT INTO member_holds VALUES (?,?)', requestId,current.user_id));
+    }));
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 120_000);
     const onClose = () => { if (!reply.raw.writableEnded) controller.abort(); };
     reply.raw.on('close', onClose);
     let selected: Row | undefined, attempts = 0, sentUpstream = false, usage: any, status = 'success', statusCode = 200, estimated = 0, cost = 0, chargedTokens = 0;
-    const finish = () => {
+    const finish = async () => {
       clearTimeout(timer); reply.raw.off('close', onClose);
       if (usage && Number.isSafeInteger(usage.prompt_tokens) && Number.isSafeInteger(usage.completion_tokens) && usage.prompt_tokens >= 0 && usage.completion_tokens >= 0 && Number.isSafeInteger(usage.prompt_tokens + usage.completion_tokens) && selected) {
         cost = Math.ceil(usage.prompt_tokens * selected.input_price + usage.completion_tokens * selected.output_price);
         chargedTokens = usage.prompt_tokens + usage.completion_tokens;
       } else { usage = undefined; if (sentUpstream) { cost = reservation; chargedTokens = tokenReservation; estimated = 1; } }
-      try { db.transaction(() => {
-        db.run('UPDATE virtual_keys SET reserved=MAX(0,reserved-?), spent=spent+? WHERE id=?', reservation, cost, key.id);
-        db.run('UPDATE rate_windows SET tokens=MAX(0,tokens-?)+? WHERE key_id=? AND window=?', tokenReservation, chargedTokens, key.id, minuteWindow);
-        db.recordUsage(key.id, admittedAt, cost, chargedTokens, usage?.prompt_tokens ?? 0, usage?.completion_tokens ?? 0);
-        db.recordMemberUsage(db.get('SELECT user_id FROM member_holds WHERE reservation_id=?',requestId)?.user_id,admittedAt,cost,chargedTokens);
-        db.run('DELETE FROM reservations WHERE id=?', requestId);
-        db.log({ id: requestId, workspace_id: key.workspace_id, key_id: key.id, key_name: key.name, model: body.model, deployment_id: selected?.id ?? null, status, http_status: statusCode, latency_ms: Date.now() - started, input_tokens: usage?.prompt_tokens ?? 0, output_tokens: usage?.completion_tokens ?? 0, cost, estimated, guardrail, attempts, created_at: admittedAt });
-      }); } catch (error) {
+      try { (await db.transaction(async () => {
+        (await db.run('UPDATE virtual_keys SET reserved=MAX(0,reserved-?), spent=spent+? WHERE id=?', reservation, cost, key.id));
+        (await db.run('UPDATE rate_windows SET tokens=MAX(0,tokens-?)+? WHERE key_id=? AND window=?', tokenReservation, chargedTokens, key.id, minuteWindow));
+        (await db.recordUsage(key.id, admittedAt, cost, chargedTokens, usage?.prompt_tokens ?? 0, usage?.completion_tokens ?? 0));
+        (await db.recordMemberUsage((await db.get('SELECT user_id FROM member_holds WHERE reservation_id=?',requestId))?.user_id,admittedAt,cost,chargedTokens));
+        (await db.run('DELETE FROM reservations WHERE id=?', requestId));
+        (await db.log({ id: requestId, workspace_id: key.workspace_id, key_id: key.id, key_name: key.name, model: body.model, deployment_id: selected?.id ?? null, status, http_status: statusCode, latency_ms: Date.now() - started, input_tokens: usage?.prompt_tokens ?? 0, output_tokens: usage?.completion_tokens ?? 0, cost, estimated, guardrail, attempts, created_at: admittedAt }));
+      })); } catch (error) {
         request.log.error({ event: 'gateway_settlement_failed', error: safeError(error) });
         throw error;
       }
@@ -155,17 +157,17 @@ export function registerGateway(app: FastifyInstance, db: Store, options: { allo
         });
         if (response.status === 429) {
           const seconds = Number(response.headers.get('retry-after'));
-          db.run('UPDATE deployments SET failures=failures+1, cooldown_until=? WHERE id=?', Date.now() + (Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, 300) : 30) * 1000, deployment.id);
+          (await db.run('UPDATE deployments SET failures=failures+1, cooldown_until=? WHERE id=?', Date.now() + (Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, 300) : 30) * 1000, deployment.id));
           await response.body?.cancel(); sentUpstream = false;
           continue;
         }
         if (!response.ok) {
           await response.body?.cancel();
           if (response.status < 500) sentUpstream = false;
-          if (response.status >= 500) db.run('UPDATE deployments SET failures=failures+1, cooldown_until=? WHERE id=?', Date.now() + 30_000, deployment.id);
+          if (response.status >= 500) (await db.run('UPDATE deployments SET failures=failures+1, cooldown_until=? WHERE id=?', Date.now() + 30_000, deployment.id));
           throw new HttpError(502, `Provider returned HTTP ${response.status}. Check its credentials, model and request parameters.`, 'upstream_error');
         }
-        db.run('UPDATE deployments SET failures=0, cooldown_until=0 WHERE id=?', deployment.id);
+        (await db.run('UPDATE deployments SET failures=0, cooldown_until=0 WHERE id=?', deployment.id));
         break;
       }
       if (!response?.ok) throw new HttpError(503, 'Available providers are rate limited. Try again shortly.', 'upstream_rate_limit');
@@ -178,7 +180,8 @@ export function registerGateway(app: FastifyInstance, db: Store, options: { allo
         const json = JSON.parse(Buffer.concat(chunks).toString('utf8'));
         if (!Array.isArray(json.choices)) throw new HttpError(502, 'Provider returned an invalid chat response.');
         usage = json.usage;
-        return reply.send({ ...json, model: body.model });
+        // Fastify sends this only after the finally block commits accounting.
+        return { ...json, model: body.model };
       }
       if (!response.headers.get('content-type')?.includes('text/event-stream') || !response.body) throw new HttpError(502, 'Provider did not return an event stream.');
       reply.hijack();
@@ -214,6 +217,6 @@ export function registerGateway(app: FastifyInstance, db: Store, options: { allo
       }
       if (error instanceof HttpError) throw error;
       throw new HttpError(502, 'Provider connection failed, timed out or returned an invalid response. This request was not retried.', 'upstream_error');
-    } finally { finish(); }
+    } finally { (await finish()); }
   });
 }

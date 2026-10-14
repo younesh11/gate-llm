@@ -28,7 +28,7 @@ export class PostgresQuotas {
     if (!accountIds.length || accountIds.length>4 || accountIds.length!==input.accountIds.length) throw new QuotaError('invalid');
     const fingerprint=createHash('sha256').update(JSON.stringify([workspaceId,accountIds,money.toString(),tokens.toString()])).digest('hex');
     return this.db.transaction(async tx=>{
-      const inserted=await tx.query('INSERT INTO gate_core.reservations(id,workspace_id,fingerprint,status,money,tokens) VALUES($1,$2,$3,\'reserved\',$4,$5) ON CONFLICT(id) DO NOTHING RETURNING id',[requestId,workspaceId,fingerprint,amount(money),amount(tokens)]);
+      const inserted=await tx.query('INSERT INTO gate_core.reservations(id,workspace_id,fingerprint,status,money,tokens) VALUES($1,$2,$3,\'reserved\',$4,$5) ON CONFLICT DO NOTHING RETURNING id',[requestId,workspaceId,fingerprint,amount(money),amount(tokens)]);
       const [reservation]=await tx.query<Reservation>('SELECT * FROM gate_core.reservations WHERE id=$1 FOR UPDATE',[requestId]);
       if(reservation.workspace_id!==workspaceId || reservation.fingerprint!==fingerprint)throw new QuotaError('conflict');
       // A replay never authorizes another upstream generation. Callers must check created.

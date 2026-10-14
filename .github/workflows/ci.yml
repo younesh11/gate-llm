@@ -54,5 +54,6 @@ jobs:
       - run: curl --fail http://127.0.0.1:4310/ready
       - run: node scripts/smoke-docker.mjs
       - run: node scripts/smoke-compose.mjs
+      - run: node scripts/smoke-compose.mjs --postgres
       - if: always()
         run: docker compose down -v

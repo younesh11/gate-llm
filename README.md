@@ -2,7 +2,7 @@
 
 **Gateway for AI Traffic & Enforcement**
 
-An independent, self-hosted LLM gateway. One endpoint for your models, a dashboard for your keys and usage, and limits enforced before requests reach a provider. The current beta uses TypeScript, Fastify, React and SQLite; no LiteLLM dependency.
+An independent, self-hosted LLM gateway. One endpoint for your models, a dashboard for your keys and usage, and limits enforced before requests reach a provider. The current beta uses TypeScript, Fastify, React and PostgreSQL or SQLite; no LiteLLM dependency.
 
 **Version 0.2.2 · MIT license · Single instance**
 
@@ -19,7 +19,7 @@ An independent, self-hosted LLM gateway. One endpoint for your models, a dashboa
 
 Operational JSON logs, generated request IDs, database readiness and crash-released ownership are covered in [operations](docs/OPERATIONS.md). This is an internal beta; these foundations increments do not establish full production readiness.
 
-The intended production scale is applications serving thousands of users. The [PostgreSQL foundation](docs/POSTGRES_FOUNDATION.md) has started locally; the running gateway still uses SQLite. Cross-instance coordination and measured capacity/failure testing follow the [production plan](docs/PRODUCTION_PLAN.md). The current release is not qualified for that scale.
+The intended production scale is applications serving thousands of users. The unreleased [PostgreSQL integration](docs/POSTGRESQL.md) now covers the application and a controlled SQLite import, with one gateway instance enforced. Cross-instance coordination and measured capacity/failure testing follow the [production plan](docs/PRODUCTION_PLAN.md). The current release is not qualified for that scale.
 
 See [gateway behavior and limitations](docs/GATEWAY.md) for accounting, compatibility and security details. Native AWS Bedrock IAM/Converse, SSO, customer billing and multiple gateway replicas are not implemented in 0.2.2.
 
@@ -39,7 +39,7 @@ Open **http://localhost:4310** and create your owner account. The script creates
 
 Prefer the standard commands? Run `cp .env.example .env`, `chmod 600 .env`, edit the settings, then `docker compose up --build -d --wait`. Stop with `docker compose down`; **do not add `-v`**, which deletes stored data.
 
-This Compose setup currently uses persistent SQLite. The PostgreSQL foundation is not yet connected to the gateway. For published images, optional AWS credentials and remote access, see [installation](docs/INSTALLATION.md).
+This command preserves the existing SQLite setup. For a new PostgreSQL installation from source, use `./scripts/start.sh --postgres`; it generates `.env.postgres` and starts GATE plus PostgreSQL with separate persistent volumes. For published images, optional AWS credentials and remote access, see [installation](docs/INSTALLATION.md).
 
 ## Install a release package
 

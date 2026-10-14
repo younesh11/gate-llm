@@ -4,8 +4,11 @@ This project uses Semantic Versioning. Dates use YYYY-MM-DD.
 
 ## [Unreleased]
 
-- Simplify source deployment to `./scripts/start.sh`: create private environment defaults without overwriting existing settings, build with Docker Compose, wait for readiness, and print the mapped address. Document one host-port setting, persistent storage, optional AWS credentials and the incomplete PostgreSQL integration.
-- Start the PostgreSQL foundation with async bounded pools, checksummed migrations and bigint quota reservations/settlement tested against a disposable PostgreSQL container. This is an internal increment; live gateway handlers and user data still use SQLite, and multi-instance recovery remains pending.
+- Connect the application to optional PostgreSQL: asynchronous authentication, configuration, team permissions, keys, guardrails, quota admission/settlement and reports. Enforce single-gateway ownership, bounded pooling, verified TLS by default and fail-closed storage errors.
+- Add `./scripts/start.sh --postgres`, generated private database configuration, isolated persistent volumes, editable host ports and Docker readiness checks. Preserve the existing SQLite startup command.
+- Add verified offline SQLite-backup import, preserving credentials, keys, permissions and usage while invalidating browser sessions, plus PostgreSQL password recovery and backup/restore documentation.
+- Validate real PostgreSQL application flows, shared-budget races, ownership loss, import/restart recovery, pg_dump/pg_restore and Docker persistence. This increment is not a horizontal scaling or capacity certification.
+- Retain the isolated bigint quota prototype for the next accounting stage; fix concurrent duplicate reservations that could conflict on its second unique index.
 - Restrict regional AWS model discovery to active on-demand models whose region availability AWS explicitly confirms. Hide unavailable/unverified, provisioned-only and profile-only models, separate cross-region profiles, and never infer regional availability or local prices from cross-region price records.
 - Show separate input/output AWS list prices in model search, in USD per million tokens. Fetch regional public price files with bounded requests and caching; label cross-region rates, refuse ambiguous matches, and preserve discovery when pricing is unavailable. Deployment accounting prices remain explicitly configured.
 - Add a member portal for assigned models, allowance requests, personal keys and private usage. Owners assign model access and required guardrails, suspend members, approve shared money/token allowances, and review delegated deployments with owner-controlled prices.
