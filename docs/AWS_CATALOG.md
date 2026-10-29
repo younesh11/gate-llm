@@ -1,6 +1,6 @@
 # AWS model catalog
 
-Available in the unreleased source build. This adds discovery, not native Bedrock Converse inference.
+Included in version 0.3.0. Discovery and native Bedrock text inference are supported. See [Bedrock setup](BEDROCK.md) to connect the Playground.
 
 1. Configure AWS credentials for the process running GATE. The AWS SDK uses its normal credential chain: an IAM role, environment credentials, or an optional shared AWS profile. A profile is not required. For example, after configuring and signing in to your profile, launch GATE with `AWS_PROFILE=my-profile npm start`.
 2. Give that identity the read-only permissions below.
@@ -20,11 +20,23 @@ Available in the unreleased source build. This adds discovery, not native Bedroc
 
 These permissions do not grant model invocation. Credentials must be available to the server, not the browser. A Bedrock provider API key saved in GATE is not used for discovery. In Docker, configure the container's runtime AWS identity; a host profile is not automatically available inside the container. Never bake credentials into an image.
 
+## Use a local AWS profile with Docker
+
+For a PostgreSQL installation, opt in to mounting your host's `~/.aws` directory read-only:
+
+```sh
+docker compose --env-file .env.postgres -f compose.postgres.yaml -f compose.aws-profile.yaml up -d --wait
+```
+
+The default profile is selected. Set `AWS_PROFILE` in `.env.postgres` to select another profile, and set `AWS_REGION` to your intended region (for example `us-west-2`). `GATE_AWS_CONFIG_DIR` can override the host directory. Credentials are read at runtime, never copied into the image. The container user must be able to read the files. Sign in or renew SSO sessions on the host before starting or retrying discovery; the mounted cache is read-only. Profiles that depend on a host-only `credential_process` executable need another container-compatible credential source.
+
+Keep both `-f` arguments when recreating this installation; the regular start script does not enable this optional mount. Use this opt-in for a trusted local installation, since GATE can read the profiles in the mounted directory. For hosted deployments, prefer a workload IAM role.
+
 ## What the results mean
 
 Foundation models show AWS model IDs, providers, input/output modalities, streaming support, inference types and lifecycle status. Regional availability is checked independently of price records; price records never create model entries. Missing availability permission or individual lookup failures hide unverified models and show a notice. Account authorization/entitlement and actual invocation are still not proven by region availability. Active inference profiles show IDs, status, type and destination count; profiles may route across regions.
 
-Listing does not verify account invocation permissions, model access, Chat Completions compatibility, account-specific prices, context limits or remaining tokens. No model calls are made, no deployments are created, and no virtual-key usage or allowances are changed. Configure deployment input/output prices and GATE key allowances separately. Native Bedrock Converse remains pending; only deployments compatible with the existing gateway protocol can be used.
+Listing does not verify account invocation permissions, model access, Chat Completions compatibility, account-specific prices, context limits or remaining tokens. No model calls are made, no deployments are created, and no virtual-key usage or allowances are changed. Configure deployment input/output prices and GATE key allowances separately. For native text inference, select the AWS Bedrock provider type and a Converse-compatible model; see [Bedrock setup](BEDROCK.md).
 
 ## Input and output prices
 

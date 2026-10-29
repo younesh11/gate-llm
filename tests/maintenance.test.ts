@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { createApp } from '../server/app.ts';
-import { Store, passwordMatches, schemaVersion } from '../server/store.ts';
+import { Store, passwordMatches, schemaVersion, passwordHash, id, now } from '../server/store.ts';
 import { backupState, verifyBackup, restoreState, resetPassword, backupManifestFile, restoreMarkerFile } from '../server/maintenance.ts';
 
 async function fixture(directory: string) {
@@ -26,7 +26,7 @@ async function fixture(directory: string) {
     db.run('UPDATE virtual_keys SET spent=200, reserved=100 WHERE id=?', key.id);
     db.recordUsage(key.id, '2026-10-04T00:00:00.000Z', 200, 40, 30, 10);
     db.run('INSERT INTO reservations (id,workspace_id,key_id,model,amount,created_at,token_amount) VALUES (?,?,?,?,?,?,?)', 'pending', 'default', key.id, 'chat', 100, '2026-10-04T00:00:00.000Z', 50);
-    const viewer = await create('users', { name: 'Viewer', email: 'viewer@example.test', password: 'viewer-test-password', role: 'viewer' });
+    const viewer = {id:id()}; db.run('INSERT INTO users VALUES (?,?,?,?,?,?,?)',viewer.id,'default','Viewer','viewer@example.test',passwordHash('viewer-test-password'),'viewer',now());
     // Account endpoints return the member; the extra session is useful for reset isolation.
     const viewerRow = db.get('SELECT id FROM users WHERE email=?', 'viewer@example.test')!;
     db.run('INSERT INTO sessions VALUES (?,?,?)', 'viewer-session-hash', viewerRow.id, Date.now() + 3600000);
@@ -217,7 +217,7 @@ test('schema 3 backups stay verifiable and migrate only after restoring and star
   const source = join(root, 'source'), backup = join(root, 'backup'), destination = join(root, 'restored');
   const { provider } = await fixture(source);
   const old = new Store(source);
-  old.db.exec('ALTER TABLE providers DROP COLUMN token_counting; PRAGMA user_version=3;'); old.close();
+  old.db.exec('ALTER TABLE providers DROP COLUMN token_counting; ALTER TABLE providers DROP COLUMN provider_type; ALTER TABLE providers DROP COLUMN aws_region; PRAGMA user_version=3;'); old.close();
   assert.equal(backupState(source, backup).schema_version, 3);
   assert.equal(verifyBackup(backup).schema_version, 3);
   restoreState(backup, destination);

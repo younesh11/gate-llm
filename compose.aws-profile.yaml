@@ -1,0 +1,15 @@
+# Opt-in local AWS profile access. Contains no credentials.
+# Use after compose.postgres.yaml (or compose.yaml).
+services:
+  relay:
+    environment:
+      AWS_PROFILE: ${AWS_PROFILE:-default}
+      AWS_SHARED_CREDENTIALS_FILE: /home/node/.aws/credentials
+      AWS_CONFIG_FILE: /home/node/.aws/config
+    volumes:
+      - type: bind
+        source: ${GATE_AWS_CONFIG_DIR:-${HOME}/.aws}
+        target: /home/node/.aws
+        read_only: true
+        bind:
+          create_host_path: false

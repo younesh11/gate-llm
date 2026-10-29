@@ -35,6 +35,7 @@ export abstract class AppStore {
   }
   async recordUsage(keyId: string, timestamp: string, cost: number, tokens: number, inputTokens = 0, outputTokens = 0) {
     (await this.run('INSERT INTO usage_daily (key_id,day,cost,tokens,input_tokens,output_tokens) VALUES (?,?,?,?,?,?) ON CONFLICT(key_id,day) DO UPDATE SET cost=usage_daily.cost+excluded.cost,tokens=usage_daily.tokens+excluded.tokens,input_tokens=usage_daily.input_tokens+excluded.input_tokens,output_tokens=usage_daily.output_tokens+excluded.output_tokens', keyId, timestamp.slice(0, 10), cost, tokens, inputTokens, outputTokens));
+    await this.run('INSERT INTO alert_pending VALUES (?,?,?) ON CONFLICT(subject_type,subject_id,day) DO NOTHING', 'key', keyId, timestamp.slice(0,10));
   }
   async memberSummary(userId: string, timestamp = Date.now()) {
     const allowance = (await this.get('SELECT * FROM member_allowances WHERE user_id=?', userId));
@@ -46,6 +47,7 @@ export abstract class AppStore {
   }
   async recordMemberUsage(userId: string | null | undefined, timestamp: string, cost: number, tokens: number) {
     if (userId) (await this.run('INSERT INTO member_usage VALUES (?,?,?,?) ON CONFLICT(user_id,day) DO UPDATE SET cost=member_usage.cost+excluded.cost,tokens=member_usage.tokens+excluded.tokens', userId, timestamp.slice(0,10), cost, tokens));
+    if (userId) await this.run('INSERT INTO alert_pending VALUES (?,?,?) ON CONFLICT(subject_type,subject_id,day) DO NOTHING', 'member', userId, timestamp.slice(0,10));
   }
   async recoverReservations() {
     // One gateway process per data directory. An interrupted request may have been billed.

@@ -1,3 +1,4 @@
+import type { Notifications } from './notifications.ts';
 import { AppStore, mapRows } from './storage.ts';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
@@ -40,7 +41,7 @@ const cap = z.object({ budget: z.number().finite().min(0.01).max(100000).nullabl
 const validateCap = (value: { budget: number | null; token_limit: number | null }) => { if (value.budget === null && value.token_limit === null) throw new HttpError(400, 'Choose a budget, a token allowance, or both.'); };
 const keyInput = z.object({ name: z.string().trim().min(1).max(80), models: z.array(z.string().min(1).max(100)).min(1).max(100), max_request_tokens: z.number().int().min(1).max(32768).default(2048) }).strict();
 
-export function registerMembers(app: FastifyInstance, db: AppStore, sessionUser: (request: FastifyRequest) => Promise<Row>) {
+export function registerMembers(app: FastifyInstance, db: AppStore, sessionUser: (request: FastifyRequest) => Promise<Row>, notifications: Notifications) {
   const member = async (request: FastifyRequest) => { const user = (await sessionUser(request)); if (user.role !== 'member') throw new HttpError(403, 'This action is for workspace members.'); return user; };
   const target = async (request: FastifyRequest) => { const actor = (await sessionUser(request)); const user = (await db.get('SELECT id,name,email,role FROM users WHERE id=? AND workspace_id=?', (request.params as any).id, actor.workspace_id)); if (!user) throw new HttpError(404, 'Member not found.'); return { actor, user }; };
   app.get('/api/admin/team', async request => {
@@ -65,9 +66,13 @@ export function registerMembers(app: FastifyInstance, db: AppStore, sessionUser:
   });
   app.post('/api/member/allowance-requests', async request => {
     const user = (await member(request)), input = cap.extend({ reason: z.string().trim().min(1).max(500) }).strict().parse(request.body); validateCap(input);
-    if ((await db.get("SELECT id FROM allowance_requests WHERE user_id=? AND status='pending'",user.id))) throw new HttpError(409,'You already have a pending request. Wait for your owner’s decision.');
-    (await db.run('INSERT INTO allowance_requests (id,workspace_id,user_id,budget,token_limit,limit_period,reason,created_at) VALUES (?,?,?,?,?,?,?,?)',id(),user.workspace_id,user.id,input.budget===null?null:Math.round(input.budget*1e6),input.token_limit,input.limit_period,input.reason,now()));
-    (await db.audit(user.workspace_id,user.email,'allowance.requested',user.id));return {ok:true};
+    await db.transaction(async()=>{
+      if (await db.get("SELECT id FROM allowance_requests WHERE user_id=? AND status='pending'",user.id)) throw new HttpError(409,'You already have a pending request. Wait for your owner’s decision.');
+      const requestId=id();
+      await db.run('INSERT INTO allowance_requests (id,workspace_id,user_id,budget,token_limit,limit_period,reason,created_at) VALUES (?,?,?,?,?,?,?,?)',requestId,user.workspace_id,user.id,input.budget===null?null:Math.round(input.budget*1e6),input.token_limit,input.limit_period,input.reason,now());
+      await notifications.allowance(user.workspace_id,requestId,user.id);
+      await db.audit(user.workspace_id,user.email,'allowance.requested',user.id);
+    });return {ok:true};
   });
   app.post('/api/admin/allowance-requests/:id/resolve', async request => {
     const actor=(await sessionUser(request));
@@ -80,6 +85,7 @@ export function registerMembers(app: FastifyInstance, db: AppStore, sessionUser:
       if(!user || user.role!=='member') throw new HttpError(400,'This member is no longer available.');
       if(input.decision==='approved') (await db.run('INSERT INTO member_allowances VALUES (?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET budget=excluded.budget,token_limit=excluded.token_limit,limit_period=excluded.limit_period,expires_at=excluded.expires_at',row.user_id,input.budget===null?null:Math.round(input.budget*1e6),input.token_limit,input.limit_period,input.expires_at));
       (await db.run('UPDATE allowance_requests SET status=?,decision_note=?,resolved_at=? WHERE id=?',input.decision,input.note,now(),row.id));
+      await notifications.allowance(actor.workspace_id,row.id,row.user_id,input.decision);
       (await db.audit(actor.workspace_id,actor.email,`allowance.${input.decision}`,row.user_id));
     }));return {ok:true};
   });

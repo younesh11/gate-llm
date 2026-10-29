@@ -1,3 +1,4 @@
+import { id, now, passwordHash } from '../server/store.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
@@ -19,7 +20,7 @@ test('matched routes enforce owner permissions and CSRF for encoded administrati
   const owner = String(setup.headers['set-cookie']).split(';')[0];
   assert.match(String(setup.headers['set-cookie']), /HttpOnly/);
   assert.match(String(setup.headers['set-cookie']), /SameSite=Strict/i);
-  await app.inject({ method: 'POST', url: '/api/admin/users', headers: { cookie: owner }, payload: { name: 'Viewer', email: 'viewer@example.test', password: 'synthetic-test-password', role: 'viewer' } });
+  db.run('INSERT INTO users VALUES (?,?,?,?,?,?,?)',id(),'default','Viewer','viewer@example.test',passwordHash('synthetic-test-password'),'viewer',now());
   const login = await app.inject({ method: 'POST', url: '/api/login', payload: { email: 'viewer@example.test', password: 'synthetic-test-password' } });
   const viewer = String(login.headers['set-cookie']).split(';')[0];
   const actions = [

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp } from '../server/app.ts';
-import { Store, id, now } from '../server/store.ts';
+import { Store, id, now, passwordHash, schemaVersion } from '../server/store.ts';
 import { mockProvider } from '../scripts/mock-provider.ts';
 
 test('members control only their own keys and share owner-approved spending authority', async t=>{
@@ -20,7 +20,7 @@ test('members control only their own keys and share owner-approved spending auth
   await ok('/admin/deployments',{provider_id:provider.id,alias:'chat',upstream_model:'slow',weight:1,input_price:1000,output_price:1000});
   await ok('/admin/deployments',{provider_id:provider.id,alias:'owner-only',upstream_model:'fast',weight:1,input_price:0,output_price:0});
   const ownerKey=await ok('/admin/keys',{name:'Owner key secret name',owner:'Owner',models:['chat'],budget:10,rpm:60,max_request_tokens:8192});
-  async function account(name:string){await ok('/admin/users',{name,email:name+'@example.test',password:'member-test-password',role:'member'});const response=await call('/login',{email:name+'@example.test',password:'member-test-password'});assert.equal(response.statusCode,200);return {cookie:String(response.headers['set-cookie']).split(';')[0],id:db.get('SELECT id FROM users WHERE email=?',name.toLowerCase()+'@example.test')!.id};}
+  async function account(name:string){db.run('INSERT INTO users VALUES (?,?,?,?,?,?,?)',id(),'default',name,name.toLowerCase()+'@example.test',passwordHash('member-test-password'),'member',now());const response=await call('/login',{email:name+'@example.test',password:'member-test-password'});assert.equal(response.statusCode,200);return {cookie:String(response.headers['set-cookie']).split(';')[0],id:db.get('SELECT id FROM users WHERE email=?',name.toLowerCase()+'@example.test')!.id};}
   const alice=await account('Alice'),bob=await account('Bob');
   const access=(user=alice,extra:any={})=>ok(`/admin/users/${user.id}/access`,{models:['chat'],provider_ids:[],policy_id:null,suspended:false,...extra},owner,'PUT');
   const requestAllowance=async(user=alice,extra:any={})=>{await ok('/member/allowance-requests',{budget:null,token_limit:3000,limit_period:'lifetime',reason:'Development',...extra},user.cookie);return db.get("SELECT * FROM allowance_requests WHERE user_id=? AND status='pending'",user.id)!;};
@@ -129,12 +129,12 @@ test('schema 4 upgrade and backups preserve assigned usage, holds and member per
   db.run('INSERT INTO virtual_keys (id,workspace_id,name,owner,token_hash,prefix,models,budget,rpm,max_request_tokens,created_at,user_id,spent) VALUES (?,?,?,?,?,?,?,NULL,60,2048,?,?,?)',key,'default','Existing key','Existing','hash','prefix','["chat"]',now(),user,100);
   db.recordUsage(key,now(),100,500);
   db.run('INSERT INTO reservations (id,workspace_id,key_id,model,amount,created_at,token_amount) VALUES (?,?,?,?,?,?,?)',reservation,'default',key,'chat',50,now(),1000);
-  db.db.exec('DROP TABLE member_keys; DROP TABLE member_holds; DROP TABLE member_usage; DROP TABLE member_allowances; DROP TABLE member_access; DROP TABLE allowance_requests; DROP TABLE deployment_requests; PRAGMA user_version=4;');
+  db.db.exec('DROP TABLE member_keys; DROP TABLE member_holds; DROP TABLE member_usage; DROP TABLE member_allowances; DROP TABLE member_access; DROP TABLE allowance_requests; DROP TABLE deployment_requests; ALTER TABLE providers DROP COLUMN provider_type; ALTER TABLE providers DROP COLUMN aws_region; PRAGMA user_version=4;');
   db.close();backupState(source,join(root,'backup4'));assert.equal(verifyBackup(join(root,'backup4')).schema_version,4);
   db=new Store(source);assert.equal(db.memberSummary(user).tokens_used,500);assert.equal(db.memberSummary(user).tokens_reserved,1000);assert.equal(db.get('SELECT role FROM users WHERE id=?',user)!.role,'viewer');
   db.run('INSERT INTO member_access VALUES (?,?,?,?,?)',user,'["chat"]','[]',null,0);
   db.run('INSERT INTO member_allowances VALUES (?,?,?,?,?)',user,1000000,50000,'monthly',null);db.close();
-  backupState(source,join(root,'backup5'));assert.equal(verifyBackup(join(root,'backup5')).schema_version,5);
+  backupState(source,join(root,'backup5'));assert.equal(verifyBackup(join(root,'backup5')).schema_version,schemaVersion);
   restoreState(join(root,'backup5'),join(root,'restored'));db=new Store(join(root,'restored'));
   assert.equal(db.memberSummary(user).token_limit,50000);assert.equal(db.get('SELECT models FROM member_access WHERE user_id=?',user)!.models,'["chat"]');
   db.recoverReservations();assert.equal(db.memberSummary(user).tokens_used,1500);assert.equal(db.memberSummary(user).tokens_reserved,0);

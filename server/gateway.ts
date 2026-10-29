@@ -1,3 +1,4 @@
+import { fetchBedrock, converseInput, bedrockErrorMessage, type BedrockFactory } from './bedrock.ts';
 import { AppStore } from './storage.ts';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { once } from 'node:events';
@@ -22,7 +23,7 @@ const chatBody = z.object({
   stream_options: z.object({ include_usage: z.boolean().optional() }).optional(), n: z.literal(1).optional()
 }).strict();
 
-export function registerGateway(app: FastifyInstance, db: AppStore, options: { allowPrivate: boolean; timeoutMs?: number; random?: () => number }) {
+export function registerGateway(app: FastifyInstance, db: AppStore, options: { allowPrivate: boolean; timeoutMs?: number; random?: () => number; bedrockClientFactory?: BedrockFactory }) {
   const upstream = createUpstreamClient(options.allowPrivate);
   app.addHook('onClose', async () => { await upstream.close(); });
   const counting = new Map<string, { window: number; calls: number; active: number }>();
@@ -56,8 +57,9 @@ export function registerGateway(app: FastifyInstance, db: AppStore, options: { a
       if (error instanceof GuardrailError) (await db.log({ id: requestId, workspace_id: key.workspace_id, key_id: key.id, key_name: key.name, model: body.model, status: 'blocked', http_status: 422, latency_ms: Date.now() - started, guardrail: error.result }));
       throw error;
     }
-    const candidates = orderDeployments((await db.all('SELECT d.*, p.base_url, p.secret, p.token_counting FROM deployments d JOIN providers p ON p.id=d.provider_id WHERE d.workspace_id=? AND d.alias=? AND d.enabled=1 AND p.enabled=1 AND d.cooldown_until<=?', key.workspace_id, body.model, Date.now())), options.random).slice(0, 3);
+    const candidates = orderDeployments((await db.all('SELECT d.*, p.base_url, p.secret, p.token_counting, p.provider_type, p.aws_region FROM deployments d JOIN providers p ON p.id=d.provider_id WHERE d.workspace_id=? AND d.alias=? AND d.enabled=1 AND p.enabled=1 AND d.cooldown_until<=?', key.workspace_id, body.model, Date.now())), options.random).slice(0, 3);
     if (!candidates.length) throw new HttpError(503, 'No available deployment for this model.', 'no_deployments');
+    if (candidates.some(row => row.provider_type === 'bedrock')) converseInput(body);
     const totalLimit = body.max_total_tokens ?? key.max_request_tokens;
     if (totalLimit > key.max_request_tokens) throw new HttpError(400, `This key allows up to ${key.max_request_tokens} combined input + output tokens per request.`, 'request_token_limit_exceeded');
     const canCount = canCountText(body), estimate = estimateInputTokens(body);
@@ -123,7 +125,7 @@ export function registerGateway(app: FastifyInstance, db: AppStore, options: { a
     reply.raw.on('close', onClose);
     let selected: Row | undefined, attempts = 0, sentUpstream = false, usage: any, status = 'success', statusCode = 200, estimated = 0, cost = 0, chargedTokens = 0;
     const finish = async () => {
-      clearTimeout(timer); reply.raw.off('close', onClose);
+      controller.abort(); clearTimeout(timer); reply.raw.off('close', onClose);
       if (usage && Number.isSafeInteger(usage.prompt_tokens) && Number.isSafeInteger(usage.completion_tokens) && usage.prompt_tokens >= 0 && usage.completion_tokens >= 0 && Number.isSafeInteger(usage.prompt_tokens + usage.completion_tokens) && selected) {
         cost = Math.ceil(usage.prompt_tokens * selected.input_price + usage.completion_tokens * selected.output_price);
         chargedTokens = usage.prompt_tokens + usage.completion_tokens;
@@ -142,7 +144,7 @@ export function registerGateway(app: FastifyInstance, db: AppStore, options: { a
       request.log[status === 'success' ? 'info' : 'warn']({ event: 'gateway_request_settled', key_id: key.id, deployment_id: selected?.id ?? null, status, http_status: statusCode, attempts, duration_ms: Date.now() - started, tokens: chargedTokens, cost_microdollars: cost, estimated: !!estimated });
     };
     try {
-      let response: Awaited<ReturnType<UpstreamFetch>> | undefined;
+      let response: Awaited<ReturnType<UpstreamFetch>> | Response | undefined;
       for (const deployment of candidates) {
         selected = deployment;
         attempts++;
@@ -150,7 +152,9 @@ export function registerGateway(app: FastifyInstance, db: AppStore, options: { a
         const payload: any = { ...upstreamBody, model: deployment.upstream_model, ...(body.max_completion_tokens ? { max_completion_tokens: maxOutput } : { max_tokens: maxOutput }) };
         if (body.stream) payload.stream_options = { include_usage: true };
         sentUpstream = true;
-        response = await upstream.fetch(`${deployment.base_url}/chat/completions`, {
+        response = deployment.provider_type === 'bedrock'
+          ? await fetchBedrock(deployment.aws_region, { ...payload, model: deployment.upstream_model }, controller.signal, options.bedrockClientFactory, body.model)
+          : await upstream.fetch(`${deployment.base_url}/chat/completions`, {
           method: 'POST', redirect: 'error', signal: controller.signal,
           headers: { 'Content-Type': 'application/json', ...(deployment.secret ? { Authorization: `Bearer ${db.unseal(deployment.secret)}` } : {}) },
           body: JSON.stringify(payload)
@@ -165,7 +169,7 @@ export function registerGateway(app: FastifyInstance, db: AppStore, options: { a
           await response.body?.cancel();
           if (response.status < 500) sentUpstream = false;
           if (response.status >= 500) (await db.run('UPDATE deployments SET failures=failures+1, cooldown_until=? WHERE id=?', Date.now() + 30_000, deployment.id));
-          throw new HttpError(502, `Provider returned HTTP ${response.status}. Check its credentials, model and request parameters.`, 'upstream_error');
+          throw new HttpError(502, deployment.provider_type === 'bedrock' ? bedrockErrorMessage(response.status) : `Provider returned HTTP ${response.status}. Check its credentials, model and request parameters.`, 'upstream_error');
         }
         (await db.run('UPDATE deployments SET failures=0, cooldown_until=0 WHERE id=?', deployment.id));
         break;

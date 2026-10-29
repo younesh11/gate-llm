@@ -1,16 +1,21 @@
 name: gate-llm
 services:
   relay:
-    image: ${GATE_IMAGE:-gate-llm:0.2.2}
+    image: ${GATE_IMAGE:-gate-llm:0.3.0}
     build:
       context: .
       args:
-        VERSION: ${GATE_VERSION:-0.2.2}
+        VERSION: ${GATE_VERSION:-0.3.0}
         REVISION: ${GATE_REVISION:-local}
     ports:
       - "${GATE_BIND:-127.0.0.1}:${GATE_PORT:-4310}:4310"
     environment:
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
+      NOTIFICATION_EMAIL_FROM: ${NOTIFICATION_EMAIL_FROM:-}
+      NOTIFICATION_AWS_REGION: ${NOTIFICATION_AWS_REGION:-eu-west-2}
+      NOTIFICATION_SNS_TOPIC_ARN: ${NOTIFICATION_SNS_TOPIC_ARN:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       ALLOW_PRIVATE_UPSTREAMS: ${ALLOW_PRIVATE_UPSTREAMS:-false}
       # Optional AWS catalog credentials. Prefer an instance/task role on AWS.

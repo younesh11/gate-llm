@@ -1,6 +1,6 @@
 # PostgreSQL setup and migration
 
-The application can now use PostgreSQL for users, sessions, providers, deployments, policies, virtual keys, team permissions, allowances, reservations and usage. This is an **unreleased, single-gateway implementation**. It has not been qualified for thousands of concurrent requests. SQLite remains available for existing installations and demos.
+Tested with PostgreSQL 16 and 18. The application can use PostgreSQL for users, sessions, providers, deployments, policies, virtual keys, team permissions, allowances, reservations and usage. This is an **single-gateway implementation included in 0.3.0**. It has not been qualified for thousands of concurrent requests. SQLite remains available for existing installations and demos.
 
 ## Start a new Docker installation
 
@@ -62,7 +62,7 @@ Schedule downtime and drain/stop the SQLite gateway first. Keep it stopped durin
 
 5. Set `DATA_DIR` to that new directory, start GATE with the same PostgreSQL configuration, sign in, and verify providers, models, permissions, keys and usage before admitting application traffic.
 
-The importer requires SQLite schema 5. For an older schema, start and stop this GATE version in SQLite mode before making the backup. It verifies the backup, preserves IDs/password hashes/API-key hashes/provider ciphertext/the matching encryption key and usage, verifies row counts and decryptability, and commits all imported rows in one transaction. Browser sessions are invalidated. Pending reservations are conservatively charged once at the next startup, because an interrupted provider request may already have been billed. The source database and backup are never changed.
+The importer requires SQLite schema 6. For an older schema, start and stop this GATE version in SQLite mode before making the backup. It verifies the backup, preserves IDs/password hashes/API-key hashes/provider ciphertext/the matching encryption key and usage, verifies row counts and decryptability, and commits all imported rows in one transaction. Browser sessions are invalidated. Pending reservations are conservatively charged once at the next startup, because an interrupted provider request may already have been billed. The source database and backup are never changed.
 
 A nonempty target is refused. Failure leaves `postgres-import.incomplete` in the new secrets directory, preventing startup. Preserve the error evidence, use a fresh empty target database and a new directory, and repeat from the verified backup; do not remove the marker to bypass a failed import. An interrupted process may have committed before writing its completion marker, so inspect before retrying.
 

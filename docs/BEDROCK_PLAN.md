@@ -1,6 +1,6 @@
 # GATE v0.3.0 plan: Bedrock first
 
-Status: proposed implementation plan; no application changes or AWS calls made.
+Status as of 2026-10-29: text Converse/ConverseStream, server-identity authentication and provider region configuration are included in version 0.3.0. See [current behavior and limitations](BEDROCK.md). The original plan below includes future scope and does not imply all release gates have been completed.
 
 Prepared on 2026-10-04 against GATE v0.2.2, commit `e57d6d0`.
 

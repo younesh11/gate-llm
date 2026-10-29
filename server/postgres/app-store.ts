@@ -6,7 +6,7 @@ import { DirectoryLock } from '../directory-lock.ts';
 import { AppStore } from '../storage.ts';
 import type { Row } from '../store.ts';
 import { PostgresDatabase, StorageError, type PostgresOptions, type SqlTransaction } from './database.ts';
-import { applicationSchema } from './app-schema.ts';
+import { applicationMigrations } from './app-schema.ts';
 
 const ownershipLock = 719430103;
 const writeLock = 719430104;
@@ -58,19 +58,19 @@ export class PostgresAppStore extends AppStore {
       await tx.query('SET LOCAL search_path = gate_app, pg_catalog');
       await tx.query('CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, checksum TEXT NOT NULL, key_fingerprint TEXT NOT NULL)');
       const versions = await tx.query('SELECT * FROM schema_migrations ORDER BY version');
-      if (versions.length && (versions.length !== 1 || versions[0].version !== 1 || versions[0].checksum !== digest(applicationSchema))) throw new StorageError('invalid');
+      if (versions.length > applicationMigrations.length || versions.some((v, i) => v.version !== i + 1 || v.checksum !== digest(applicationMigrations[i]))) throw new StorageError('invalid');
       const keyPath = join(this.directory, 'encryption.key');
       if (!existsSync(keyPath)) {
         if (versions.length) throw new StorageError('invalid');
         writeFileSync(keyPath, randomBytes(32), { flag: 'wx', mode: 0o600 });
       }
       this.encryptionKey = readFileSync(keyPath);
-      if (this.encryptionKey.length !== 32 || versions.length && versions[0].key_fingerprint !== digest(this.encryptionKey)) throw new StorageError('invalid');
+      if (this.encryptionKey.length !== 32 || versions.some(v => v.key_fingerprint !== digest(this.encryptionKey))) throw new StorageError('invalid');
       chmodSync(keyPath, 0o600);
-      if (!versions.length) {
-        await tx.query(applicationSchema);
-        await tx.query("INSERT INTO workspaces VALUES ('default','My workspace')");
-        await tx.query('INSERT INTO schema_migrations VALUES (1,$1,$2)', [digest(applicationSchema), digest(this.encryptionKey)]);
+      for (let i = versions.length; i < applicationMigrations.length; i++) {
+        await tx.query(applicationMigrations[i]);
+        if (i === 0) await tx.query("INSERT INTO workspaces VALUES ('default','My workspace')");
+        await tx.query('INSERT INTO schema_migrations VALUES ($1,$2,$3)', [i + 1, digest(applicationMigrations[i]), digest(this.encryptionKey)]);
       }
       await tx.query('INSERT INTO runtime_owner VALUES (1,$1) ON CONFLICT(id) DO UPDATE SET token=excluded.token', [this.ownerToken]);
     });

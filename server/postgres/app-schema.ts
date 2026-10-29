@@ -1,3 +1,4 @@
+import { notificationSchema } from '../notification-schema.ts';
 // Schema 1 mirrors the application data model (SQLite version 5); IDs remain stable text.
 // Released migration SQL is immutable; append a migration for future changes.
 export const applicationSchema = `
@@ -78,3 +79,9 @@ CREATE INDEX audit_workspace_time ON audit(workspace_id,created_at);
 CREATE INDEX allowance_workspace_time ON allowance_requests(workspace_id,created_at);
 CREATE INDEX deployment_request_workspace_time ON deployment_requests(workspace_id,created_at);
 `;
+
+export const bedrockProviderSchema = `
+ALTER TABLE providers ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'openai' CHECK(provider_type IN ('openai','bedrock'));
+ALTER TABLE providers ADD COLUMN aws_region TEXT;
+`;
+export const applicationMigrations = [applicationSchema, bedrockProviderSchema, notificationSchema];

@@ -4,11 +4,14 @@ import { createHash } from 'node:crypto';
 const manifest = JSON.parse(readFileSync('artifacts/npm/manifest.json', 'utf8'));
 const path = `artifacts/npm/${manifest.filename}`;
 if (createHash('sha256').update(readFileSync(path)).digest('hex') !== manifest.sha256) throw new Error('Package checksum mismatch.');
-const files = execFileSync('tar', ['-tzf', path], { encoding: 'utf8' }).trim().split('\n');
+const files = execFileSync('tar', ['-tzf', path], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }).trim().split('\n');
 for (const file of files) {
   if (!/^package\/(build\/|dist\/|docs\/|node_modules\/|package.json$|README.md$|LICENSE$|CHANGELOG.md$)/.test(file)) throw new Error(`Unexpected packaged file: ${file}`);
   if (/(^|\/)(\.env(?:\.[^/]*)?|data|\.git|\.npmrc|encryption\.key|process\.lock)(\/|$)|\.sqlite(?:-|$|\.)/.test(file)) throw new Error(`Private file in package: ${file}`);
 }
 for (const file of ['package/build/cli.js', 'package/build/app.js', 'package/build/aws-catalog.js', 'package/build/aws-pricing.js', 'package/build/members.js', 'package/node_modules/@aws-sdk/client-bedrock/dist-cjs/index.js', 'package/build/upstream.js', 'package/build/token-counting.js', 'package/dist/index.html', 'package/LICENSE', 'package/node_modules/fastify/fastify.js', 'package/node_modules/undici/index.js']) if (!files.includes(file)) throw new Error(`Missing release file: ${file}`);
 console.log(`Package checked: ${files.length} files; compiled server, UI, bundled runtime dependencies, no local state.`);
+for (const file of ['package/build/bedrock.js', 'package/docs/BEDROCK.md', 'package/node_modules/@aws-sdk/client-bedrock-runtime/dist-cjs/index.js']) if (!files.includes(file)) throw new Error(`Missing Bedrock runtime file: ${file}`);
 for (const file of ['package/build/storage.js', 'package/build/postgres/app-store.js', 'package/build/postgres/app-schema.js', 'package/build/postgres/import-sqlite.js', 'package/build/postgres/maintenance.js', 'package/docs/POSTGRESQL.md', 'package/build/postgres/database.js', 'package/build/postgres/migrations.js', 'package/build/postgres/quotas.js', 'package/node_modules/pg/lib/index.js']) if (!files.includes(file)) throw new Error(`Missing PostgreSQL runtime file: ${file}`);
+
+for (const file of ['package/build/notifications.js', 'package/build/notification-schema.js', 'package/build/notification-transport.js', 'package/docs/NOTIFICATIONS.md', 'package/node_modules/@aws-sdk/client-sesv2/dist-cjs/index.js', 'package/node_modules/@aws-sdk/client-sns/dist-cjs/index.js']) if (!files.includes(file)) throw new Error(`Missing notification runtime file: ${file}`);

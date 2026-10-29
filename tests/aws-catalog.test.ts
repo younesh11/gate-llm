@@ -1,3 +1,4 @@
+import { id, now, passwordHash } from '../server/store.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -40,7 +41,7 @@ test('AWS catalog lists normalized metadata without inference, usage changes or 
 
 test('catalog discovery requires owner authorization including encoded URLs, and rejects endpoint/credential input', async t => {
   const f = await fixture(t, async () => ({ modelSummaries: [] }));
-  await f.app.inject({ method: 'POST', url: '/api/admin/users', headers: { cookie: f.cookie }, payload: { name: 'Viewer', email: 'viewer@example.test', password: 'synthetic-test-password', role: 'viewer' } });
+  f.db.run('INSERT INTO users VALUES (?,?,?,?,?,?,?)',id(),'default','Viewer','viewer@example.test',passwordHash('synthetic-test-password'),'viewer',now());
   const login = await f.app.inject({ method: 'POST', url: '/api/login', payload: { email: 'viewer@example.test', password: 'synthetic-test-password' } });
   const viewer = String(login.headers['set-cookie']).split(';')[0];
   for (const url of ['/api/admin/aws/catalog', '/%61pi/%61dmin/aws/catalog']) {

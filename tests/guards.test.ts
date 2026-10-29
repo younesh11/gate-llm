@@ -73,7 +73,7 @@ test('schema 2 policies migrate with their existing choices and assignments inta
   try {
     db.run('INSERT INTO policies (id,workspace_id,name,blocked_terms,redact_pii,block_secrets,created_at) VALUES (?,?,?,?,?,?,?)', 'old-policy', 'default', 'Old policy', '["term"]', 0, 1, now());
     db.run('INSERT INTO virtual_keys (id,workspace_id,name,owner,token_hash,prefix,models,policy_id,rpm,max_request_tokens,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)', 'old-key', 'default', 'Old key', 'Team', 'hash', 'rk_old', '["chat"]', 'old-policy', 60, 8192, now());
-    db.db.exec('ALTER TABLE policies DROP COLUMN pii_types; ALTER TABLE policies DROP COLUMN term_match; ALTER TABLE providers DROP COLUMN token_counting; PRAGMA user_version=2;');
+    db.db.exec('ALTER TABLE policies DROP COLUMN pii_types; ALTER TABLE policies DROP COLUMN term_match; ALTER TABLE providers DROP COLUMN token_counting; ALTER TABLE providers DROP COLUMN provider_type; ALTER TABLE providers DROP COLUMN aws_region; PRAGMA user_version=2;');
     db.close(); db = new Store(directory);
     const policy = db.get('SELECT * FROM policies WHERE id=?', 'old-policy')!;
     assert.equal(policy.blocked_terms, '["term"]'); assert.equal(policy.redact_pii, 0); assert.equal(policy.block_secrets, 1);

@@ -4,6 +4,14 @@ This project uses Semantic Versioning. Dates use YYYY-MM-DD.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-29
+
+- **Account provisioning change:** `POST /api/admin/users` now returns 410. Use owner-created invitations; existing accounts remain valid. Back up before upgrading to SQLite schema 7 or PostgreSQL migration 3; older binaries require a restored pre-upgrade backup.
+- Add invite-only member onboarding, private notification inboxes, integrated budget/token alerts and a durable SES/SNS delivery queue. Owner-created initial passwords are replaced by expiring invitation links.
+- Add PostgreSQL migration 3 / SQLite schema 7 for invitations and notifications, and patch vulnerable runtime/build dependencies.
+
+- Add native AWS Bedrock text chat and streaming via Converse using the server AWS identity, with region selection, OpenAI response translation, token usage settlement and explicit unsupported-option errors. Preserve existing providers through SQLite/PostgreSQL migrations. Add an opt-in read-only Docker AWS profile mount.
+
 - Connect the application to optional PostgreSQL: asynchronous authentication, configuration, team permissions, keys, guardrails, quota admission/settlement and reports. Enforce single-gateway ownership, bounded pooling, verified TLS by default and fail-closed storage errors.
 - Add `./scripts/start.sh --postgres`, generated private database configuration, isolated persistent volumes, editable host ports and Docker readiness checks. Preserve the existing SQLite startup command.
 - Add verified offline SQLite-backup import, preserving credentials, keys, permissions and usage while invalidating browser sessions, plus PostgreSQL password recovery and backup/restore documentation.

@@ -1,3 +1,4 @@
+import { id, now, passwordHash } from '../../server/store.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'node:fs';
@@ -40,7 +41,7 @@ test('PostgreSQL application: authentication, permissions, proxy, accounting and
     assert.notEqual(stored!.secret,'synthetic-provider-secret');assert.equal(db.unseal(stored!.secret),'synthetic-provider-secret');
     await ok('/api/admin/deployments',{provider_id:provider.id,alias:'chat',upstream_model:'slow',weight:1,input_price:2,output_price:4});
     await ok('/api/admin/deployments',{provider_id:provider.id,alias:'owner-only',upstream_model:'fast',weight:1,input_price:0,output_price:0});
-    await ok('/api/admin/users',{name:'Member',email:'member@example.test',password:'member-test-password',role:'member'});
+    await db.run('INSERT INTO users VALUES (?,?,?,?,?,?,?)',id(),'default','Member','member@example.test',passwordHash('member-test-password'),'member',now());
     const login=await call('/api/login',{email:'member@example.test',password:'member-test-password'});assert.equal(login.statusCode,200,login.body);
     memberCookie=String(login.headers['set-cookie']).split(';')[0];memberId=(await db.get('SELECT id FROM users WHERE email=?','member@example.test'))!.id;
   });
@@ -169,4 +170,79 @@ test('verified SQLite backup imports atomically; keys, encrypted credentials and
   await assert.rejects(PostgresAppStore.open(refused,postgres),/did not complete/);
   assert.deepEqual(verifyBackup(backup),before);
   const untouched=new Store(source);assert.equal(untouched.get('SELECT spent FROM virtual_keys WHERE id=?',keyId)!.spent,7);assert.equal(untouched.get('SELECT COUNT(*) AS count FROM reservations')!.count,1);untouched.close();
+});
+
+test('PostgreSQL Bedrock migration preserves existing providers; native streaming settles the shared ledger', async t => {
+  const { createHash } = await import('node:crypto');
+  const { applicationSchema } = await import('../../server/postgres/app-schema.ts');
+  const { now, issueToken, hash } = await import('../../server/store.ts');
+  const directory = mkdtempSync(join(tmpdir(),'gate-pg-bedrock-'));
+  t.after(()=>rmSync(directory,{recursive:true}));
+  const admin = new PostgresDatabase(postgres);
+  await admin.transaction(async tx=>{ await tx.query('DROP SCHEMA gate_app CASCADE'); });
+  let db = await PostgresAppStore.open(directory,postgres);
+  await db.run('INSERT INTO providers (id,workspace_id,name,base_url,secret,created_at) VALUES (?,?,?,?,?,?)','legacy','default','Legacy','https://old.example/v1',db.seal('legacy-secret'),now());
+  await db.close();
+  // Recreate the exact deployed version-1 schema metadata, keeping real data.
+  await admin.transaction(async tx=>{
+    await tx.query('ALTER TABLE gate_app.providers DROP COLUMN provider_type');
+    await tx.query('ALTER TABLE gate_app.providers DROP COLUMN aws_region');
+    await tx.query('DELETE FROM gate_app.schema_migrations WHERE version>=2');
+  });
+  db = await PostgresAppStore.open(directory,postgres);
+  const old=await db.get('SELECT * FROM providers WHERE id=?','legacy');
+  assert.equal(old!.provider_type,'openai'); assert.equal(old!.aws_region,null); assert.equal(db.unseal(old!.secret),'legacy-secret');
+  const baseline=await db.get('SELECT checksum FROM schema_migrations WHERE version=1');
+  assert.equal(baseline!.checksum,createHash('sha256').update(applicationSchema).digest('hex'));
+  await db.run("UPDATE providers SET provider_type='bedrock',aws_region='us-west-2',secret='',base_url='https://bedrock-runtime.us-west-2.amazonaws.com' WHERE id='legacy'");
+  await db.run('INSERT INTO deployments VALUES (?,?,?,?,?,?,?,?,?,0,0,?)','bedrock','default','legacy','llama','meta.llama3-1-8b-instruct-v1:0',1,0.22,0.44,1,now());
+  const token=issueToken();
+  await db.run('INSERT INTO virtual_keys (id,workspace_id,name,owner,token_hash,prefix,models,budget,rpm,max_request_tokens,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)','native-key','default','App','Owner',hash(token),token.slice(0,11),'["llama"]',1000000,60,2048,now());
+  await db.close();
+  const opened=await createApp({directory,postgres,logLevel:'silent',bedrockClientFactory:()=>({send:async()=>({stream:(async function*(){yield {messageStart:{role:'assistant'}};yield {contentBlockDelta:{delta:{text:'Hello'}}};yield {messageStop:{stopReason:'end_turn'}};yield {metadata:{usage:{inputTokens:12,outputTokens:4}}};})()}),destroy(){}} as any)});
+  try {
+    const response=await opened.app.inject({method:'POST',url:'/v1/chat/completions',headers:{authorization:'Bearer '+token},payload:{model:'llama',messages:[{role:'user',content:'hello'}],stream:true,max_tokens:32}});
+    assert.equal(response.statusCode,200,response.body); assert.match(response.body,/\[DONE\]/);
+    // Streaming closes the response before the final accounting transaction commits.
+    let log;
+    for(let attempt=0;attempt<100;attempt++){
+      log=await opened.db.get('SELECT * FROM requests WHERE key_id=?','native-key');
+      if(log)break;
+      await new Promise(resolve=>setTimeout(resolve,10));
+    }
+    assert.ok(log,'Streaming accounting must commit within the bounded observation window.');
+    assert.equal(log.cost,5);assert.equal(log!.input_tokens,12);assert.equal(log!.output_tokens,4);assert.equal(log!.estimated,0);
+    assert.equal((await opened.db.get('SELECT reserved FROM virtual_keys WHERE id=?','native-key'))!.reserved,0);
+  } finally {await opened.app.close();await admin.close();}
+});
+
+test('PostgreSQL invitations and notifications survive restart with atomic acceptance and durable retries',async t=>{
+  const admin=new PostgresDatabase(postgres);await admin.transaction(async tx=>{await tx.query('DROP SCHEMA gate_app CASCADE');});await admin.close();
+  const directory=mkdtempSync(join(tmpdir(),'gate-pg-notifications-'));let sends=0,fail=true;
+  const transport={email:true,sns:false,async send(){if(fail)throw new Error('private SES error');sends++;return 'provider-accepted';}};
+  const options={directory,postgres,publicBaseUrl:'http://localhost:4310',notificationWorker:false,notificationTransport:transport,logLevel:'silent' as const};
+  let current=await createApp(options);
+  t.after(async()=>{await current.app.close();rmSync(directory,{recursive:true,force:true});});
+  const setup=await current.app.inject({method:'POST',url:'/api/setup',payload:{workspace:'Queue test',name:'Owner',email:'owner@example.test',password:'owner-test-password'}});assert.equal(setup.statusCode,200,setup.body);
+  const cookie=String(setup.headers['set-cookie']).split(';')[0];
+  const call=(path:string,payload?:any,method:any=payload===undefined?'GET':'POST')=>current.app.inject({url:'/api'+path,method,headers:{cookie},...(payload===undefined?{}:{payload})});
+  const invite=await call('/admin/invitations',{name:'Member',email:'invited@example.test',send_email:true});assert.equal(invite.statusCode,200,invite.body);
+  const link=invite.json().link,token=new URL(link).hash.slice(7);
+  await current.notifications.tick();assert.equal((await current.db.get('SELECT attempts FROM notification_deliveries'))!.attempts,1);
+  await current.app.close();current=await createApp(options);
+  assert.equal((await current.db.get('SELECT COUNT(*) AS n FROM invitations'))!.n,1);
+  fail=false;await current.db.run('UPDATE notification_deliveries SET next_at=0');await current.notifications.tick();assert.equal(sends,1);assert.equal((await current.db.get('SELECT payload FROM notification_deliveries'))!.payload,'');
+  const accept=()=>call('/invitations/accept',{token,password:'new-member-password',confirm_password:'new-member-password'});
+  const results=await Promise.all([accept(),accept()]);assert.deepEqual(results.map(r=>r.statusCode).sort(),[200,400]);
+  const user=(await current.db.get("SELECT * FROM users WHERE email='invited@example.test'"))!;
+  assert.equal((await current.db.get('SELECT COUNT(*) AS n FROM member_allowances'))!.n,0);
+  await current.db.run('INSERT INTO member_allowances VALUES (?,?,?,?,?)',user.id,1000000,1000,'monthly',null);
+  await current.db.transaction(async()=>{await current.db.recordMemberUsage(user.id,'2026-10-29T00:00:00.000Z',900000,900);});
+  await current.notifications.tick();assert.equal((await current.db.get('SELECT COUNT(*) AS n FROM notifications'))!.n,4);
+  await current.db.transaction(async()=>{await current.db.recordMemberUsage(user.id,'2026-10-29T00:00:00.000Z',1,1);});await current.notifications.tick();assert.equal((await current.db.get('SELECT COUNT(*) AS n FROM notifications'))!.n,4);
+  // Recovered worker claims are retried after a lease expires; no raw token leaks through history.
+  const queued=await call('/admin/invitations',{name:'Recovery',email:'recovery@example.test',send_email:true});assert.equal(queued.statusCode,200,queued.body);
+  await current.db.run("UPDATE notification_deliveries SET status='sending',lease_until=0,claim='crashed-worker' WHERE invitation_id=?",queued.json().id);
+  await current.notifications.tick();assert.equal(sends,2);
+  const history=await call('/admin/notifications');assert.equal(history.statusCode,200);assert.ok(!history.body.includes(token));assert.ok(!history.body.includes('private SES error'));
 });

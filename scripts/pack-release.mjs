@@ -5,7 +5,7 @@ import { resolve, join } from 'node:path';
 const directory = resolve('artifacts/npm'); mkdirSync(directory, { recursive: true });
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 execFileSync(npm, ['run', 'build'], { stdio: 'inherit' });
-const result = JSON.parse(execFileSync(npm, ['pack', '--ignore-scripts', '--json', '--pack-destination', directory], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }))[0];
+const result = JSON.parse(execFileSync(npm, ['pack', '--ignore-scripts', '--json', '--pack-destination', directory], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'inherit'] }))[0];
 const path = join(directory, result.filename);
 const manifest = { name: result.name, version: result.version, filename: result.filename, sha256: createHash('sha256').update(readFileSync(path)).digest('hex') };
 writeFileSync('artifacts/npm/manifest.json', JSON.stringify(manifest, null, 2) + '\n');

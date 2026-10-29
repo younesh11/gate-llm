@@ -4,7 +4,7 @@
 
 An independent, self-hosted LLM gateway. One endpoint for your models, a dashboard for your keys and usage, and limits enforced before requests reach a provider. The current beta uses TypeScript, Fastify, React and PostgreSQL or SQLite; no LiteLLM dependency.
 
-**Version 0.2.2 · MIT license · Single instance**
+**Version 0.3.0 · MIT license · Single instance**
 
 ## Features
 
@@ -14,14 +14,15 @@ An independent, self-hosted LLM gateway. One endpoint for your models, a dashboa
 - **Proxy and routing:** OpenAI-compatible chat completions, JSON/SSE streaming, weighted load balancing, cooldowns and fallback on explicit HTTP 429 responses.
 - **Input guardrails:** reusable per-key policies, a local policy tester, normalized blocked terms, selected secret detection and configurable pattern-based PII redaction.
 - **Playground and analytics:** streaming chat, token and spend breakdowns by key/member/application, request history and audit records.
-- **Team access:** owner/viewer accounts, hashed virtual keys and encrypted provider credentials.
+- **Team access:** owner/member/viewer roles, invite-only password setup, assigned models, shared allowances, hashed virtual keys and encrypted provider credentials.
+- **Notifications:** private inboxes, budget/token thresholds, allowance decisions and durable optional SES email/SNS delivery.
 - **Recovery:** verified offline backups, restores into new directories, and local password reset with session invalidation.
 
 Operational JSON logs, generated request IDs, database readiness and crash-released ownership are covered in [operations](docs/OPERATIONS.md). This is an internal beta; these foundations increments do not establish full production readiness.
 
-The intended production scale is applications serving thousands of users. The unreleased [PostgreSQL integration](docs/POSTGRESQL.md) now covers the application and a controlled SQLite import, with one gateway instance enforced. Cross-instance coordination and measured capacity/failure testing follow the [production plan](docs/PRODUCTION_PLAN.md). The current release is not qualified for that scale.
+The intended production scale is applications serving thousands of users. The [PostgreSQL integration](docs/POSTGRESQL.md) now covers the application and a controlled SQLite import, with one gateway instance enforced. Cross-instance coordination and measured capacity/failure testing follow the [production plan](docs/PRODUCTION_PLAN.md). The current release is not qualified for that scale.
 
-See [gateway behavior and limitations](docs/GATEWAY.md) for accounting, compatibility and security details. Native AWS Bedrock IAM/Converse, SSO, customer billing and multiple gateway replicas are not implemented in 0.2.2.
+See [gateway behavior and limitations](docs/GATEWAY.md) for accounting, compatibility and security details. Native AWS Bedrock text chat and streaming use IAM with Converse. SSO, customer billing and multiple gateway replicas are not implemented.
 
 ## Start with Docker
 
@@ -43,7 +44,9 @@ This command preserves the existing SQLite setup. For a new PostgreSQL installat
 
 ## Install a release package
 
-The [v0.2.2 release](https://github.com/younesh11/gate-llm/releases/tag/v0.2.2) has public npm and Python downloads with checksums. You do not need a registry account to install them. Publication under the short `gate-llm` name on npm/PyPI is still pending.
+**The 0.3.0 source is available through the Git tag; build it with Docker above or package it locally. A Git push does not publish npm/PyPI packages or a container image.**
+
+The older [v0.2.2 release](https://github.com/younesh11/gate-llm/releases/tag/v0.2.2) has public npm and Python downloads with checksums. You do not need a registry account to install them. Those older downloads do not include the 0.3.0 features. Publication under the short `gate-llm` name on npm/PyPI is still pending.
 
 ```sh
 # npm — Node.js 22.13+ required (24 LTS recommended)
@@ -106,8 +109,9 @@ npm run test:package
 
 - [Installation](docs/INSTALLATION.md) and [configuration](docs/CONFIGURATION.md)
 - [Gateway features, API behavior and limits](docs/GATEWAY.md)
-- [Member access and approval flow](docs/MEMBER_ACCESS.md) (unreleased source feature)
-- [AWS model catalog setup](docs/AWS_CATALOG.md) (unreleased source feature)
+- [Member access and approval flow](docs/MEMBER_ACCESS.md) (included in 0.3.0)
+- [Native AWS Bedrock text chat and streaming](docs/BEDROCK.md) (included in 0.3.0)
+- [AWS model catalog setup](docs/AWS_CATALOG.md) (included in 0.3.0)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Upgrades, backups and migration](docs/UPGRADING.md)
 - [Backup, restore and password recovery](docs/RECOVERY.md), including Docker examples
@@ -115,3 +119,7 @@ npm run test:package
 - [Changelog](CHANGELOG.md), [contributing](CONTRIBUTING.md) and [security](SECURITY.md)
 
 Licensed under the [MIT license](LICENSE).
+
+### Invitations and notifications
+
+Invite members from **Team**, let them set their own passwords, and review their allowance requests. **Settings → Notifications** controls budget and combined-token alerts; the notification bell shows each person’s private inbox. Optional SES email and SNS administrator alerts use a durable delivery queue. See [Invitations and notifications](docs/NOTIFICATIONS.md) for configuration, security and delivery guarantees.

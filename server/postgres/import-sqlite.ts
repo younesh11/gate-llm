@@ -6,7 +6,7 @@ import { id, now, schemaVersion } from '../store.ts';
 import { PostgresAppStore } from './app-store.ts';
 import type { PostgresOptions } from './database.ts';
 
-const tables = ['workspaces','users','providers','deployments','policies','virtual_keys','rate_windows','requests','reservations','audit','usage_daily','member_access','member_allowances','member_usage','member_keys','member_holds','allowance_requests','deployment_requests'] as const;
+const tables = ['workspaces','users','providers','deployments','policies','virtual_keys','rate_windows','requests','reservations','audit','usage_daily','member_access','member_allowances','member_usage','member_keys','member_holds','allowance_requests','deployment_requests','notification_settings','invitations','notifications','notification_deliveries','alert_pending'] as const;
 
 /** Offline, all-or-nothing import of a verified backup. Never modifies the source. */
 export async function importSqlite(input: string, directory: string, options: PostgresOptions) {
@@ -42,6 +42,9 @@ export async function importSqlite(input: string, directory: string, options: Po
       }
       // Browser sessions are intentionally invalidated. API key hashes and usage remain intact.
       await db.run('INSERT INTO audit VALUES (?,?,?,?,?,?)',id(),'default','system','storage.imported','SQLite backup → PostgreSQL',now());
+      // Old-origin invitation links must be regenerated after migration.
+      await db.run("UPDATE invitations SET status='revoked' WHERE status='pending'");
+      await db.run("UPDATE notification_deliveries SET status='cancelled',payload='',claim=NULL WHERE invitation_id IS NOT NULL AND status IN ('pending','sending')");
       for (const provider of await db.all("SELECT secret FROM providers WHERE secret<>''")) db.unseal(provider.secret);
     });
     unlinkSync(join(destination,'postgres-import.incomplete'));

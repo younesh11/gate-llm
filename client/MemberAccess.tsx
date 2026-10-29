@@ -1,3 +1,4 @@
+import { NotificationBell, Invitations } from './Notifications';
 import React, { useEffect, useRef, useState } from 'react';
 import { Check, KeyRound, Layers3, LogOut, Plus, RefreshCw, ShieldCheck, X } from 'lucide-react';
 import { UsageDashboard } from './UsageDashboard';
@@ -44,7 +45,7 @@ export function MemberHome({session,data,refresh,logout,playground}: {session:Ro
     if(kind==='deployment')void run('/member/deployment-requests',Object.fromEntries(form));
     if(kind==='rotate'||kind==='revoke')void run(`/member/keys/${row.id}/${kind}`,{});
   };
-  return <div className="member-shell"><header className="member-top"><span className="brand"><Layers3/> gate.</span><span>{session.workspace.name}</span><div><span>{session.user.name}</span><button className="icon-button" aria-label="Refresh my access" onClick={()=>void refresh()}><RefreshCw size={18}/></button><button className="icon-button" aria-label="Sign out" onClick={()=>void logout()}><LogOut size={18}/></button></div></header>
+  return <div className="member-shell"><header className="member-top"><span className="brand"><Layers3/> gate.</span><span>{session.workspace.name}</span><div><span>{session.user.name}</span><NotificationBell/><button className="icon-button" aria-label="Refresh my access" onClick={()=>void refresh()}><RefreshCw size={18}/></button><button className="icon-button" aria-label="Sign out" onClick={()=>void logout()}><LogOut size={18}/></button></div></header>
     <main className="member-main"><div className="page-head"><div><div className="eyebrow">YOUR WORKSPACE</div><h1>{tab==='access'?'My access':tab==='keys'?'My keys':tab==='usage'?'My usage':tab==='deployments'?'My deployments':'Playground'}</h1><p>Your models, allowance and personal keys.</p></div></div>
       <nav className="tabs member-tabs" aria-label="Member navigation">{[['access','My access'],['keys','My keys'],['usage','My usage'],['playground','Playground'],...(data.providers.length?[['deployments','My deployments']]:[])].map(([id,label])=><button key={id} className={tab===id?'active':''} onClick={()=>{setTab(id);setNotice('');}}>{label}</button>)}</nav>
       {notice&&<p className="access-notice" role="status"><Check size={16}/>{notice}</p>}
@@ -87,7 +88,7 @@ export function TeamManager({data,refresh}: {data:Row;refresh:()=>Promise<void>}
   if(!team)return <p>{error||'Loading your team…'}</p>;
   const requests=team.requests.filter((r:Row)=>r.status==='pending'),deployments=team.deployments.filter((r:Row)=>r.status==='pending');
   return <div className="stack">{notice&&<p role="status" className="access-notice"><Check size={16}/>{notice}</p>}{error&&!dialog&&<p className="form-error">{error}</p>}
-    <section className="panel access-card"><h3>Requests to review <span className="badge">{requests.length+deployments.length}</span></h3><p className="muted">Approve allowances and confirm prices for delegated deployments.</p>{!requests.length&&!deployments.length&&<p className="access-status">You're all caught up. New member requests will appear here.</p>}
+    <Invitations data={data}/><section className="panel access-card"><h3>Requests to review <span className="badge">{requests.length+deployments.length}</span></h3><p className="muted">Approve allowances and confirm prices for delegated deployments.</p>{!requests.length&&!deployments.length&&<p className="access-status">You're all caught up. New member requests will appear here.</p>}
       {requests.map((r:Row)=><div className="access-request" key={r.id}><div><strong>{r.user_name??'Removed member'} · allowance</strong><p>{r.reason}</p><small>{r.budget!==null?usd(r.budget):''}{r.budget!==null&&r.token_limit!==null?' + ':''}{r.token_limit!==null?`${count(r.token_limit)} tokens`:''} · {r.limit_period}</small></div><button className="button secondary" onClick={()=>open('allowance',r)}>Review allowance</button></div>)}
       {deployments.map((r:Row)=><div className="access-request" key={r.id}><div><strong>{r.user_name} · {r.alias}</strong><small>{r.provider_name} / {r.upstream_model}</small></div><button className="button secondary" onClick={()=>open('deployment',r)}>Review deployment</button></div>)}
     </section>

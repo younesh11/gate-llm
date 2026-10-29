@@ -49,7 +49,7 @@ export function AwsModels({ owner, copy }: { owner: boolean; copy: (text: string
       </details>
       <div aria-live="polite">{error && <p className="form-error" role="alert">{error}</p>}</div>
     </section>
-    <div className="info-note"><p><strong>Discovery is separate from model access.</strong> A catalog entry does not verify your account’s invocation permissions, token quota, or Chat Completions compatibility. Native Bedrock Converse support is still pending in GATE. Check compatibility before adding a copied ID in Models &amp; routing.</p></div>
+    <div className="info-note"><p><strong>Discovery is separate from model access.</strong> A catalog entry does not verify invocation permissions or token quota. To chat, add an AWS Bedrock provider with the same region, then use a Converse-compatible model ID in Models &amp; routing. Text chat and streaming are supported; tools and multimodal input are not yet supported.</p></div>
     {catalog && <section className="panel">
       <div className="panel-head"><div><h3>{catalog.kind === 'models' ? 'Models available in this region' : 'Inference profiles (may route across regions)'} · {catalog.region}</h3><p>{catalog.items.length} returned · Loaded {new Date(catalog.fetched_at).toLocaleTimeString()}</p></div></div>
       <div className="filter-bar aws-catalog-filter"><div className="search"><Search size={17}/><input aria-label="Search AWS catalog" placeholder="Search name, provider or model ID…" value={search} onChange={event => setSearch(event.target.value)}/></div><span className="muted">{items.length} shown</span></div>

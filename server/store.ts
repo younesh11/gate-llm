@@ -1,3 +1,4 @@
+import { notificationSchema } from './notification-schema.ts';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -5,7 +6,7 @@ import { randomBytes, randomUUID, createHash, createCipheriv, createDecipheriv, 
 import { DirectoryLock } from './directory-lock.ts';
 
 export type Row = Record<string, any>;
-export const schemaVersion = 5;
+export const schemaVersion = 7;
 export class Store {
   db!: DatabaseSync;
   encryptionKey: Buffer;
@@ -111,6 +112,16 @@ export class Store {
           }
           this.db.exec('PRAGMA user_version=5');
         });
+      }
+      if (Number(this.get('PRAGMA user_version')!.user_version) < 6) {
+        this.transaction(() => {
+          this.db.exec(`ALTER TABLE providers ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'openai' CHECK(provider_type IN ('openai','bedrock'));
+            ALTER TABLE providers ADD COLUMN aws_region TEXT;
+            PRAGMA user_version=6;`);
+        });
+      }
+      if (Number(this.get('PRAGMA user_version')!.user_version) < 7) {
+        this.transaction(() => { this.db.exec(notificationSchema); this.db.exec('PRAGMA user_version=7'); });
       }
     } catch (error) {
       this.db?.close();

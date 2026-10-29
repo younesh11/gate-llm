@@ -98,4 +98,4 @@ Production configuration must include database TLS where appropriate, least-priv
 - Review tenant/member isolation, secret rotation, TLS ingress, dependency vulnerabilities and operational access. Multi-tenant SaaS still requires its own isolation and provisioning review.
 - Gate: only claim production capacity for the measured workload and topology. The existing 88 functional tests are regression evidence, not a load certification.
 
-Native Bedrock invocation remains a separate provider-adapter milestone. AWS catalog/pricing discovery is not evidence that Bedrock inference works. Resume provider expansion alongside or after the foundations without weakening these release gates.
+Native Bedrock text invocation is included in version 0.3.0; see [current Bedrock behavior](BEDROCK.md). This does not qualify the gateway for the production capacity targets in this plan. Provider expansion must preserve these release gates.

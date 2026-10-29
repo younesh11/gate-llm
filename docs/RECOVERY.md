@@ -2,9 +2,9 @@
 
 For PostgreSQL use [PostgreSQL backup, restore and password recovery](POSTGRESQL.md). The SQLite backup commands below do not back up PostgreSQL.
 
-GATE 0.2.2 adds offline maintenance commands for a single instance. Use the same release that wrote the data (schema 3 for this release). Commands print a JSON result on success and exit nonzero on failure. They work through the npm CLI, Python launcher and Docker entrypoint. Stop the gateway and disable automatic restarts before backup or password reset; an active owner causes the command to refuse access.
+GATE includes offline maintenance commands for a single instance. Use the same release that wrote the data (SQLite schema 7 in GATE 0.3.0). Commands print a JSON result on success and exit nonzero on failure. They work through the npm CLI, Python launcher and Docker entrypoint. Stop the gateway and disable automatic restarts before backup or password reset; an active owner causes the command to refuse access.
 
-The unreleased token-counting build uses schema 4 and accepts both schema 3 and 4 backups. Verification checks that the manifest matches the database schema. Backup, restore and password recovery never migrate the source; a restored schema-3 copy migrates on normal startup. Published v0.2.2 does not support schema 4.
+GATE 0.3.0 accepts SQLite schema 3–7 backups. Verification checks that the manifest matches the database schema. Backup, restore and password recovery never migrate the source; normal startup migrates the restored copy to schema 7. Published v0.2.2 tools support schema 3 only. For PostgreSQL, follow [database-specific recovery](POSTGRESQL.md). Docker examples below use the locally built `gate-llm:0.3.0` image; build the matching source before running them.
 
 ## Create and verify a backup
 
@@ -58,10 +58,10 @@ docker volume create gate-backups
 docker run --rm --init \
   --volume gate-llm_relay-data:/source \
   --volume gate-backups:/app/data \
-  ghcr.io/younesh11/gate-llm:0.2.2 \
+  gate-llm:0.3.0 \
   backup --data-dir /source --output /app/data/before-upgrade
 docker run --rm --init --volume gate-backups:/app/data:ro \
-  ghcr.io/younesh11/gate-llm:0.2.2 \
+  gate-llm:0.3.0 \
   verify-backup --input /app/data/before-upgrade
 docker compose start relay
 
@@ -70,11 +70,11 @@ docker volume create gate-restored
 docker run --rm --init \
   --volume gate-backups:/backups:ro \
   --volume gate-restored:/app/data \
-  ghcr.io/younesh11/gate-llm:0.2.2 \
+  gate-llm:0.3.0 \
   restore --input /backups/before-upgrade --data-dir /app/data/restored
 docker run --rm --init --publish 127.0.0.1:4313:4310 \
   --volume gate-restored:/app/data \
-  ghcr.io/younesh11/gate-llm:0.2.2 serve --data-dir /app/data/restored
+  gate-llm:0.3.0 serve --data-dir /app/data/restored
 ```
 
 For a password reset on the original Compose state:

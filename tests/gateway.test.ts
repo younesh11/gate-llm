@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp } from '../server/app.ts';
 import { mockProvider } from '../scripts/mock-provider.ts';
-import { Store, hash, id, now } from '../server/store.ts';
+import { Store, hash, id, now, passwordHash } from '../server/store.ts';
 
 test('gateway integration and security boundaries', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-test-'));
@@ -183,7 +183,7 @@ test('gateway integration and security boundaries', async t => {
     assert.equal(event.status, 'error'); assert.equal(event.http_status, 502); assert.equal(event.estimated, true);
   });
   await t.test('viewer role reads metadata but cannot mutate, and removal invalidates sessions', async () => {
-    await create('users', { name: 'Viewer', email: 'viewer@example.test', password: 'viewer-password-long', role: 'viewer' });
+    db.run('INSERT INTO users VALUES (?,?,?,?,?,?,?)',id(),'default','Viewer','viewer@example.test',passwordHash('viewer-password-long'),'viewer',now());
     const login = await app.inject({ method: 'POST', url: '/api/login', payload: { email: 'viewer@example.test', password: 'viewer-password-long' } });
     const viewerCookie = String(login.headers['set-cookie']).split(';')[0];
     assert.equal((await admin('state', undefined, 'GET', viewerCookie)).statusCode, 200);
@@ -320,7 +320,7 @@ test('gateway integration and security boundaries', async t => {
     db.recordUsage(foreign.id, now(), 100, 200, 50, 150);
     const report = await admin('usage?period=all');
     assert.ok(!report.body.includes(foreign.id)); assert.ok(!report.body.includes('Foreign usage marker'));
-    await create('users', { name: 'Removable', email: 'removable@example.test', password: 'removable-password', role: 'viewer' });
+    db.run('INSERT INTO users VALUES (?,?,?,?,?,?,?)',id(),'default','Removable','removable@example.test',passwordHash('removable-password'),'viewer',now());
     const local = db.get('SELECT id FROM users WHERE email=?', 'removable@example.test')!;
     const k = await makeKey({ user_id: local.id }); await chat(k.token);
     assert.equal((await admin(`users/${local.id}`, undefined, 'DELETE')).statusCode, 200);
@@ -355,7 +355,7 @@ test('existing databases migrate per-request limits and reported token splits wi
     db.run('INSERT INTO virtual_keys (id,workspace_id,name,owner,token_hash,prefix,models,budget,rpm,max_request_tokens,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)', keyId, 'default', 'Old key', 'Team', hash('old-key'), 'rk_old', '["chat"]', 10000000, 60, 2048, now());
     db.recordUsage(keyId, now(), 50, 200, 30, 70);
     db.log({ key_id: keyId, input_tokens: 30, output_tokens: 70, cost: 50 });
-    db.db.exec('ALTER TABLE virtual_keys RENAME COLUMN max_request_tokens TO max_output; ALTER TABLE virtual_keys DROP COLUMN user_id; ALTER TABLE usage_daily DROP COLUMN input_tokens; ALTER TABLE usage_daily DROP COLUMN output_tokens; ALTER TABLE policies DROP COLUMN pii_types; ALTER TABLE policies DROP COLUMN term_match; ALTER TABLE providers DROP COLUMN token_counting; PRAGMA user_version=1;');
+    db.db.exec('ALTER TABLE virtual_keys RENAME COLUMN max_request_tokens TO max_output; ALTER TABLE virtual_keys DROP COLUMN user_id; ALTER TABLE usage_daily DROP COLUMN input_tokens; ALTER TABLE usage_daily DROP COLUMN output_tokens; ALTER TABLE policies DROP COLUMN pii_types; ALTER TABLE policies DROP COLUMN term_match; ALTER TABLE providers DROP COLUMN token_counting; ALTER TABLE providers DROP COLUMN provider_type; ALTER TABLE providers DROP COLUMN aws_region; PRAGMA user_version=1;');
     db.close(); db = new Store(directory);
     const key = db.get('SELECT * FROM virtual_keys WHERE id=?', keyId)!;
     assert.equal(key.max_request_tokens, 2048); assert.equal(key.budget, 10000000); assert.equal(key.user_id, null);

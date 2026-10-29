@@ -1,10 +1,10 @@
 # Members, model permissions and allowances
 
-This is an unreleased source feature. The database migrates to schema 5. Back up before upgrading; older binaries cannot open schema 5. Existing providers, keys, owners and per-key limits are preserved. Viewers now see only personal activity, rather than workspace-wide configuration. No existing viewer is automatically granted member privileges.
+Included in GATE 0.3.0. Member access was introduced in SQLite schema 5; the current release migrates to schema 7. Back up before upgrading; older binaries cannot open the current schema. Existing providers, keys, owners and per-key limits are preserved. Viewers now see only personal activity, rather than workspace-wide configuration. No existing viewer is automatically granted member privileges.
 
 ## Owner flow
 
-1. Open **Team → Add member**, choose **Member**, and supply their name, email and initial password. Share the password privately. Invitations and self-service password recovery remain future work; the local recovery CLI remains available.
+1. Open **Team → Invite person**, enter their name and email, and choose **Member**. Optionally assign model access and a guardrail policy. Copy the invitation link or send it through configured email delivery. The link expires after 24 hours; the recipient sets their own password, then signs in normally. Self-service password recovery remains future work; the local recovery CLI remains available.
 2. Choose **Manage access** next to the person and select model aliases. Optionally require a guardrail policy for all their keys.
 3. Review their allowance request in **Team → Requests to review**. Approve the requested limits, adjust them, or reject with a note. An approval replaces their total dollar/token limit and period; it never clears usage or reservations. An optional expiry stops new inference and key creation after that date.
 4. To delegate deployment creation, select approved providers under **Allow deployment creation**. Members submit a new alias and upstream model ID. Owners set separate input/output prices and approve activation. Model access and allowances remain separate decisions.

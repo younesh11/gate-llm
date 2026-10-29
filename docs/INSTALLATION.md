@@ -1,6 +1,6 @@
 # Installation
 
-GATE means Gateway for AI Traffic & Enforcement. The package name is `gate-llm`; the command is `gate-llm`. Version 0.2.2 is available as a public Docker image and [GitHub release downloads](https://github.com/younesh11/gate-llm/releases/tag/v0.2.2). Short-name installation from npm/PyPI is still pending.
+GATE means Gateway for AI Traffic & Enforcement. The package name is `gate-llm`; the command is `gate-llm`. The current source version is 0.3.0; build this checkout for invitations, native Bedrock and PostgreSQL support. Previously published version 0.2.2 is available as a public Docker image and [GitHub release downloads](https://github.com/younesh11/gate-llm/releases/tag/v0.2.2). Short-name installation from npm/PyPI is still pending.
 
 ## Docker Compose (no Node or Python installation needed)
 
@@ -26,7 +26,7 @@ docker compose logs -f relay
 
 The named `relay-data` volume contains the database and encryption key. `docker compose down` preserves it; `docker compose down -v` deletes it. Never use `-v` for an upgrade. Keep the same Compose project name/directory to reuse its volume. Back up before updating from published schema 3 to the current source schema 5; older binaries cannot open the upgraded database.
 
-The container listens on 0.0.0.0 internally, while Compose defaults to host loopback (`GATE_BIND=127.0.0.1`). It runs as UID 1000 with dropped capabilities and a read-only root filesystem. Use a named volume, or make bind-mounted state writable by UID 1000. This command starts SQLite. From the source checkout, `./scripts/start.sh --postgres` starts the integrated PostgreSQL application and database, with a generated password, editable port and separate volumes. See [PostgreSQL setup and migration](POSTGRESQL.md). This support is unreleased; existing published 0.2.2 artifacts do not include it.
+The container listens on 0.0.0.0 internally, while Compose defaults to host loopback (`GATE_BIND=127.0.0.1`). It runs as UID 1000 with dropped capabilities and a read-only root filesystem. Use a named volume, or make bind-mounted state writable by UID 1000. This command starts SQLite. From the source checkout, `./scripts/start.sh --postgres` starts the integrated PostgreSQL application and database, with a generated password, editable port and separate volumes. See [PostgreSQL setup and migration](POSTGRESQL.md). These features are included in 0.3.0 source; existing published 0.2.2 artifacts do not include them.
 
 For a remote server, keep the default binding and use an SSH tunnel for initial owner setup, for example `ssh -L 4310:127.0.0.1:4310 user@server`. For team access, put a configured HTTPS reverse proxy in front, preserve the external Host header and set `COOKIE_SECURE=true`. `GATE_BIND` can select a host interface if necessary; do not expose an uninitialized gateway or send credentials over public HTTP. Compose enables remote first-owner setup internally for container NAT, so the loopback binding is part of the default protection.
 
@@ -53,7 +53,7 @@ gate-llm serve --port 4310
 
 # Locally built release:
 npm run pack:release
-npm install -g ./artifacts/npm/gate-llm-0.2.2.tgz
+npm install -g ./artifacts/npm/gate-llm-0.3.0.tgz
 ```
 
 The npm archive includes compiled JavaScript, the dashboard and runtime dependencies. TypeScript and build tools are not required on the target machine. No install script starts a server or creates an account.
@@ -71,7 +71,7 @@ gate-llm serve --port 4310
 pipx install https://github.com/younesh11/gate-llm/releases/download/v0.2.2/gate_llm-0.2.2-py3-none-any.whl
 
 # Locally built wheel:
-python -m pip install ./artifacts/python/gate_llm-0.2.2-py3-none-any.whl
+python -m pip install ./artifacts/python/gate_llm-0.3.0-py3-none-any.whl
 ```
 
 Choose either pip or npm for the command in a given environment to avoid PATH ambiguity. The Python wrapper extracts a checksum-verified runtime to `~/.cache/gate-llm`; `GATE_RUNTIME_DIR` overrides the cache. Runtime cache and application data must remain separate.

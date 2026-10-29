@@ -1,3 +1,5 @@
+import { Notifications, registerNotifications, publicBaseUrl } from './notifications.ts';
+import { awsNotificationTransport, type NotificationTransport } from './notification-transport.ts';
 import { PostgresAppStore } from './postgres/app-store.ts';
 import { StorageError, type PostgresOptions } from './postgres/database.ts';
 import { AppStore, SqliteAppStore, mapRows } from './storage.ts';
@@ -11,6 +13,7 @@ import { version } from './meta.ts';
 import { randomBytes } from 'node:crypto';
 import { z, ZodError } from 'zod';
 import { Store, HttpError, hash, id, now, issueToken, passwordHash, passwordMatches, type Row } from './store.ts';
+import { awsRegion, type BedrockFactory } from './bedrock.ts';
 import { registerGateway, validateUpstream } from './gateway.ts';
 import { defaultPiiTypes, inspectPolicy, piiTypes, policyPiiTypes } from './guards.ts';
 import { loggingOptions, registerOperations, safeError, type LogDestination, type LogLevel } from './operations.ts';
@@ -18,25 +21,27 @@ import type { PriceLoader } from './aws-pricing.ts';
 import { accessFor, memberState, registerMembers } from './members.ts';
 import { registerAwsCatalog, type CatalogClientFactory } from './aws-catalog.ts';
 
-type Options = { postgres?: PostgresOptions; directory: string; allowPrivate?: boolean; secureCookie?: boolean; allowRemoteSetup?: boolean; staticDir?: string; timeoutMs?: number; random?: () => number; logLevel?: LogLevel; logDestination?: LogDestination; catalogClientFactory?: CatalogClientFactory; priceLoader?: PriceLoader };
+type Options = { publicBaseUrl?: string; notificationTransport?: NotificationTransport; notificationWorker?: boolean; trustedProxy?: string[]; postgres?: PostgresOptions; directory: string; allowPrivate?: boolean; secureCookie?: boolean; allowRemoteSetup?: boolean; staticDir?: string; timeoutMs?: number; random?: () => number; logLevel?: LogLevel; logDestination?: LogDestination; bedrockClientFactory?: BedrockFactory; catalogClientFactory?: CatalogClientFactory; priceLoader?: PriceLoader };
 const name = z.string().trim().min(1).max(80);
-const providerSchema = z.object({ name, base_url: z.string().max(500), api_key: z.string().max(4096).optional(), token_counting: z.enum(['estimate', 'vllm']).optional(), enabled: z.boolean().default(true) });
+const providerSchema = z.object({ name, provider_type: z.enum(['openai', 'bedrock']).optional(), aws_region: awsRegion.optional(), base_url: z.string().max(500).optional(), api_key: z.string().max(4096).optional(), token_counting: z.enum(['estimate', 'vllm']).optional(), enabled: z.boolean().default(true) }).strict();
 const deploymentSchema = z.object({ provider_id: z.string(), alias: z.string().regex(/^[a-zA-Z0-9._/-]{1,100}$/), upstream_model: z.string().min(1).max(200), weight: z.number().int().min(1).max(1000), input_price: z.number().finite().min(0).max(1000), output_price: z.number().finite().min(0).max(1000), enabled: z.boolean().default(true) });
 const policySchema = z.object({ name, blocked_terms: z.array(z.string().trim().min(1).max(100)).max(100), redact_pii: z.boolean(), block_secrets: z.boolean(), pii_types: z.array(z.enum(piiTypes)).max(4).default(defaultPiiTypes), term_match: z.enum(['substring', 'word']).default('substring') });
 const keySchema = z.object({ name, owner: name, models: z.array(z.string().min(1).max(100)).min(1).max(100), policy_id: z.string().nullable().default(null), budget: z.number().finite().min(0.01).max(100000).nullable(), rpm: z.number().int().min(1).max(10000), max_request_tokens: z.number().int().min(1).max(1000000), expires_at: z.string().datetime().nullable().default(null), token_limit: z.number().int().min(0).max(1e12).nullable().optional(), tpm: z.number().int().min(1).max(1e9).nullable().optional(), limit_period: z.enum(['lifetime', 'daily', 'monthly']).optional(), user_id: z.string().nullable().optional() });
 const memberSchema = z.object({ name, email: z.string().trim().email().max(150).transform(v => v.toLowerCase()), password: z.string().min(12).max(200), role: z.enum(['owner', 'member', 'viewer']) });
 
-export function createApp(options: Options & { postgres: PostgresOptions }): Promise<{ app: Awaited<ReturnType<typeof createAppInternal>>['app']; db: PostgresAppStore }>;
-export function createApp(options: Options & { postgres?: undefined }): Promise<{ app: Awaited<ReturnType<typeof createAppInternal>>['app']; db: Store }>;
-export function createApp(options: Options): Promise<{ app: Awaited<ReturnType<typeof createAppInternal>>['app']; db: Store | PostgresAppStore }>;
+export function createApp(options: Options & { postgres: PostgresOptions }): Promise<{ app: Awaited<ReturnType<typeof createAppInternal>>['app']; notifications: Notifications; db: PostgresAppStore }>;
+export function createApp(options: Options & { postgres?: undefined }): Promise<{ app: Awaited<ReturnType<typeof createAppInternal>>['app']; notifications: Notifications; db: Store }>;
+export function createApp(options: Options): Promise<{ app: Awaited<ReturnType<typeof createAppInternal>>['app']; notifications: Notifications; db: Store | PostgresAppStore }>;
 export function createApp(options: Options) { return createAppInternal(options); }
 async function createAppInternal(options: Options) {
-  const app = Fastify({ ...loggingOptions(options.logLevel, options.logDestination), bodyLimit: 256 * 1024, requestTimeout: 150000 });
+  const origin = publicBaseUrl(options.publicBaseUrl);
+  const app = Fastify({ ...loggingOptions(options.logLevel, options.logDestination), trustProxy: options.trustedProxy ?? false, bodyLimit: 256 * 1024, requestTimeout: 150000 });
   const rawDb = options.postgres ? await PostgresAppStore.open(options.directory, options.postgres) : new Store(options.directory);
   const db: AppStore = rawDb instanceof Store ? new SqliteAppStore(rawDb) : rawDb;
   app.addHook('onClose', async () => (await db.close()));
   try {
     (await db.recoverReservations());
+    const notifications = new Notifications(db, options.notificationTransport ?? awsNotificationTransport({}), origin);
     registerOperations(app, db);
     await app.register(cookie);
     const attempts = new Map<string, { count: number; until: number }>();
@@ -52,13 +57,14 @@ async function createAppInternal(options: Options) {
       // Authorize the router's matched route, not the raw URL: percent-encoded
       // static path segments must have exactly the same permissions.
       const route = request.routeOptions.url ?? '';
+      if (request.url.split('?')[0] === '/invite' || route.startsWith('/api/invitations/')) reply.header('Referrer-Policy','no-referrer').header('Cache-Control','no-store').header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
       if (route.startsWith('/api/')) {
         reply.header('Cache-Control', 'no-store');
         if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)) {
-          const origin = request.headers.origin;
+          const requestOrigin = request.headers.origin;
           let sameOrigin = true;
-          if (origin) {
-            try { sameOrigin = new URL(origin).origin === new URL(`${options.secureCookie ? 'https' : request.protocol}://${request.headers.host}`).origin; }
+          if (requestOrigin) {
+            try { sameOrigin = new URL(requestOrigin).origin === (origin ?? new URL(`${options.secureCookie ? 'https' : request.protocol}://${request.headers.host}`).origin); }
             catch { sameOrigin = false; }
           }
           if (!sameOrigin || request.headers['sec-fetch-site'] === 'cross-site') throw new HttpError(403, 'Cross-origin administration is not allowed.');
@@ -130,7 +136,7 @@ async function createAppInternal(options: Options) {
     app.get('/api/admin/state', async request => {
       const user = (await sessionUser(request)), w = user.workspace_id;
       if (user.role !== 'owner') return (await memberState(db, user));
-      const providers = (await db.all('SELECT id, name, base_url, enabled, created_at, token_counting, (length(secret)>0) AS has_key FROM providers WHERE workspace_id=? ORDER BY created_at DESC', w));
+      const providers = (await db.all('SELECT id, name, base_url, enabled, created_at, token_counting, provider_type, aws_region, (length(secret)>0) AS has_key FROM providers WHERE workspace_id=? ORDER BY created_at DESC', w));
       const deployments = (await db.all('SELECT d.*, p.name AS provider_name FROM deployments d JOIN providers p ON p.id=d.provider_id WHERE d.workspace_id=? ORDER BY d.alias, d.created_at', w));
       const keys = (await mapRows((await db.all('SELECT id,name,owner,prefix,models,policy_id,budget,spent,reserved,rpm,max_request_tokens,expires_at,revoked,created_at,token_limit,tpm,limit_period,user_id FROM virtual_keys WHERE workspace_id=? ORDER BY created_at DESC', w)), async key => ({ ...key, models: JSON.parse(key.models), ...(await db.limitSummary(key)) })));
       const policies = (await db.all('SELECT * FROM policies WHERE workspace_id=? ORDER BY created_at', w)).map(policy => ({ ...policy, blocked_terms: JSON.parse(policy.blocked_terms), pii_types: policyPiiTypes(policy) }));
@@ -165,20 +171,36 @@ async function createAppInternal(options: Options) {
       const user = (await sessionUser(request)), row = (await db.get(`SELECT * FROM ${table} WHERE id=? AND workspace_id=?`, request.params.id, user.workspace_id));
       if (!row) throw new HttpError(404, 'Item not found.'); return { user, row };
     };
+    const providerConfig = async (input: z.infer<typeof providerSchema>, row?: Row) => {
+      const type = input.provider_type ?? row?.provider_type ?? 'openai';
+      if (type === 'bedrock') {
+        const region = awsRegion.parse(input.aws_region ?? row?.aws_region);
+        if (input.api_key || input.token_counting === 'vllm') throw new HttpError(400, 'Bedrock uses the server AWS identity and conservative token counting. Do not supply a provider API key.');
+        const url = `https://bedrock-runtime.${region}.amazonaws.com`;
+        if (input.base_url && input.base_url !== url) throw new HttpError(400, 'Bedrock endpoints are selected automatically from the region.');
+        return { type, region, url, secret: '', counting: 'estimate' };
+      }
+      if (input.aws_region !== undefined) throw new HttpError(400, 'AWS region applies only to Bedrock providers.');
+      const url = await validateUpstream(input.base_url ?? '', !!options.allowPrivate);
+      const counting = input.token_counting ?? row?.token_counting ?? 'estimate';
+      if (counting === 'vllm' && !url.endsWith('/v1')) throw new HttpError(400, 'vLLM token counting requires a base URL ending in /v1.');
+      return { type, region: null, url, counting, secret: input.api_key === undefined ? row?.secret ?? '' : input.api_key ? db.seal(input.api_key) : '' };
+    };
     app.post('/api/admin/providers', async request => {
       const user = (await sessionUser(request)), input = providerSchema.parse(request.body), providerId = id();
-      const url = await validateUpstream(input.base_url, !!options.allowPrivate);
-      if (input.token_counting === 'vllm' && !url.endsWith('/v1')) throw new HttpError(400, 'vLLM token counting requires a base URL ending in /v1.');
-      (await db.run('INSERT INTO providers (id,workspace_id,name,base_url,secret,enabled,created_at,token_counting) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', providerId, user.workspace_id, input.name, url, input.api_key ? db.seal(input.api_key) : '', Number(input.enabled), now(), input.token_counting ?? 'estimate'));
+      const config = await providerConfig(input);
+      (await db.run('INSERT INTO providers (id,workspace_id,name,base_url,secret,enabled,created_at,token_counting,provider_type,aws_region) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', providerId, user.workspace_id, input.name, config.url, config.secret, Number(input.enabled), now(), config.counting, config.type, config.region));
       (await db.audit(user.workspace_id, user.email, 'provider.created', input.name)); return { id: providerId };
     });
     app.put('/api/admin/providers/:id', async request => {
       const { user, row } = (await record('providers', request)), input = providerSchema.parse(request.body);
-      const url = await validateUpstream(input.base_url, !!options.allowPrivate);
-      const counting = input.token_counting ?? row.token_counting;
-      if (counting === 'vllm' && !url.endsWith('/v1')) throw new HttpError(400, 'vLLM token counting requires a base URL ending in /v1.');
-      (await db.run('UPDATE providers SET name=?, base_url=?, secret=?, enabled=?, token_counting=? WHERE id=?', input.name, url, input.api_key === undefined ? row.secret : (input.api_key ? db.seal(input.api_key) : ''), Number(input.enabled), counting, row.id));
-      (await db.audit(user.workspace_id, user.email, 'provider.updated', input.name)); return { ok: true };
+      const config = await providerConfig(input, row);
+      await db.transaction(async () => {
+        await db.run('UPDATE providers SET name=?, base_url=?, secret=?, enabled=?, token_counting=?,provider_type=?,aws_region=? WHERE id=?', input.name, config.url, config.secret, Number(input.enabled), config.counting, config.type, config.region, row.id);
+        await db.run('UPDATE deployments SET failures=0,cooldown_until=0 WHERE provider_id=?', row.id);
+        await db.audit(user.workspace_id, user.email, 'provider.updated', input.name);
+      });
+      return { ok: true };
     });
     app.post('/api/admin/deployments', async request => {
       const user = (await sessionUser(request)), input = deploymentSchema.parse(request.body), deploymentId = id();
@@ -247,12 +269,7 @@ async function createAppInternal(options: Options) {
       const { user, row } = (await record('virtual_keys', request)); (await db.run('UPDATE virtual_keys SET revoked=1 WHERE id=?', row.id));
       (await db.audit(user.workspace_id, user.email, 'key.revoked', row.name)); return { ok: true };
     });
-    app.post('/api/admin/users', async request => {
-      const user = (await sessionUser(request)), input = memberSchema.parse(request.body);
-      if ((await db.get('SELECT id FROM users WHERE email=?', input.email))) throw new HttpError(409, 'This email is already a member.');
-      (await db.run('INSERT INTO users VALUES (?, ?, ?, ?, ?, ?, ?)', id(), user.workspace_id, input.name, input.email, passwordHash(input.password), input.role, now()));
-      (await db.audit(user.workspace_id, user.email, 'member.created', input.email)); return { ok: true };
-    });
+    app.post('/api/admin/users', async () => { throw new HttpError(410, 'Use Team invitations so each person sets their own password.', 'invitation_required'); });
     app.delete('/api/admin/users/:id', async request => {
       const { user, row } = (await record('users', request));
       if (row.id === user.id) throw new HttpError(400, 'You cannot remove your own account.');
@@ -264,15 +281,16 @@ async function createAppInternal(options: Options) {
       (await db.run('UPDATE workspaces SET name=? WHERE id=?', input.name, user.workspace_id));
       (await db.audit(user.workspace_id, user.email, 'workspace.updated', input.name)); return { ok: true };
     });
-    registerMembers(app, db, sessionUser);
+    registerMembers(app, db, sessionUser, notifications);
+    registerNotifications(app, notifications, sessionUser, options.notificationWorker ?? true);
     registerAwsCatalog(app, async request => (await sessionUser(request)).workspace_id, options.catalogClientFactory, options.priceLoader);
-    registerGateway(app, db, { allowPrivate: !!options.allowPrivate, timeoutMs: options.timeoutMs, random: options.random });
+    registerGateway(app, db, { allowPrivate: !!options.allowPrivate, timeoutMs: options.timeoutMs, random: options.random, bedrockClientFactory: options.bedrockClientFactory });
     const staticDir = options.staticDir ?? fileURLToPath(new URL('../dist/', import.meta.url));
     if (existsSync(staticDir)) {
       await app.register(staticFiles, { root: staticDir });
       app.setNotFoundHandler((request, reply) => request.method === 'GET' && !request.url.startsWith('/api') && !request.url.startsWith('/v1') ? reply.sendFile('index.html') : reply.code(404).send({ error: { message: 'Route not found.', code: 'not_found' } }));
     }
-    return { app, db: rawDb };
+    return { app, db: rawDb, notifications };
   } catch (error) {
     await app.close();
     throw error;

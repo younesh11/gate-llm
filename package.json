@@ -1,6 +1,6 @@
 {
   "name": "gate-llm",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "type": "module",
   "engines": {
     "node": ">=22.13"
@@ -25,12 +25,15 @@
   },
   "dependencies": {
     "@aws-sdk/client-bedrock": "^3.1151.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.1151.0",
+    "@aws-sdk/client-sesv2": "^3.1151.0",
+    "@aws-sdk/client-sns": "^3.1151.0",
     "@fastify/cookie": "^11.0.2",
     "@fastify/static": "^10.1.5",
     "fastify": "^5.12.5",
     "pg": "^8.23.1",
     "undici": "^7.30.0",
-    "zod": "^3.24.0"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^22.13.0",
@@ -75,7 +78,10 @@
     "zod",
     "undici",
     "@aws-sdk/client-bedrock",
-    "pg"
+    "pg",
+    "@aws-sdk/client-bedrock-runtime",
+    "@aws-sdk/client-sesv2",
+    "@aws-sdk/client-sns"
   ],
   "repository": {
     "type": "git",
