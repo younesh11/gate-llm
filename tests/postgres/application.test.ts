@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { id, now, passwordHash } from '../../server/store.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -245,4 +246,30 @@ test('PostgreSQL invitations and notifications survive restart with atomic accep
   await current.db.run("UPDATE notification_deliveries SET status='sending',lease_until=0,claim='crashed-worker' WHERE invitation_id=?",queued.json().id);
   await current.notifications.tick();assert.equal(sends,2);
   const history=await call('/admin/notifications');assert.equal(history.statusCode,200);assert.ok(!history.body.includes(token));assert.ok(!history.body.includes('private SES error'));
+});
+
+// Shares exactly the same role contract with SQLite.
+import { adminScenario } from '../fixtures/admin-scenario.ts';
+import { notificationSchema } from '../../server/notification-schema.ts';
+test('PostgreSQL admin authorization and schema 3 upgrade',async t=>{
+  const maintenance=new PostgresDatabase(postgres);
+  await maintenance.transaction(async tx=>{await tx.query('DROP SCHEMA gate_app CASCADE');});
+  const directory=mkdtempSync(join(tmpdir(),'gate-pg-admin-'));
+  let storage=await PostgresAppStore.open(directory,postgres);
+  // Simulate the previous published constraint and metadata, retaining pending data.
+  await storage.run('INSERT INTO invitations VALUES (?,?,?,?,?,?,?,?,?,?,?,?)','legacy-invite','default','old-issuer','Legacy','legacy@roles.test','member','legacy-hash','[]',null,'pending',Date.now()+86400000,now());
+  await storage.run('INSERT INTO notification_deliveries (id,workspace_id,invitation_id,channel,dedupe,title,payload,status,next_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)','legacy-delivery','default','legacy-invite','email','legacy','Invite','ciphertext','pending',0,now());
+  await storage.close();
+  await maintenance.transaction(async tx=>{
+    await tx.query('ALTER TABLE gate_app.invitations DROP CONSTRAINT invitations_role_check');
+    await tx.query("ALTER TABLE gate_app.invitations ADD CONSTRAINT invitations_role_check CHECK(role IN ('member','viewer'))");
+    await tx.query('DELETE FROM gate_app.schema_migrations WHERE version=4');
+  });
+  await maintenance.close();
+  const opened=await createApp({directory,postgres,allowPrivate:true,logLevel:'silent',publicBaseUrl:'http://localhost:4310',notificationWorker:false,notificationTransport:{email:true,sns:false,async send(){return 'test';}}});
+  t.after(async()=>{await opened.app.close();rmSync(directory,{recursive:true});});
+  assert.equal((await opened.db.get("SELECT token_hash FROM invitations WHERE id='legacy-invite'"))!.token_hash,'legacy-hash');
+  assert.equal((await opened.db.get("SELECT invitation_id FROM notification_deliveries WHERE id='legacy-delivery'"))!.invitation_id,'legacy-invite');
+  assert.equal((await opened.db.get('SELECT checksum FROM schema_migrations WHERE version=3'))!.checksum,createHash('sha256').update(notificationSchema).digest('hex'));
+  await adminScenario(t,opened);
 });

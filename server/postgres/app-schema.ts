@@ -1,3 +1,4 @@
+import { postgresAdminRoleSchema } from '../admin-role-schema.ts';
 import { notificationSchema } from '../notification-schema.ts';
 // Schema 1 mirrors the application data model (SQLite version 5); IDs remain stable text.
 // Released migration SQL is immutable; append a migration for future changes.
@@ -84,4 +85,4 @@ export const bedrockProviderSchema = `
 ALTER TABLE providers ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'openai' CHECK(provider_type IN ('openai','bedrock'));
 ALTER TABLE providers ADD COLUMN aws_region TEXT;
 `;
-export const applicationMigrations = [applicationSchema, bedrockProviderSchema, notificationSchema];
+export const applicationMigrations = [applicationSchema, bedrockProviderSchema, notificationSchema, postgresAdminRoleSchema];

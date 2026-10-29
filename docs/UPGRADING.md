@@ -8,6 +8,8 @@
 
 Never run two versions against one data directory. The process lock guards concurrent writers, but is not a backup mechanism. Do not manually delete a live process lock.
 
+The unreleased Admin role increment migrates SQLite from schema 7 to 8 and PostgreSQL from application migration 3 to 4. Existing users retain their roles; invitation tokens, delivery records and usage are preserved. Take a database backup and preserve the matching encryption key before upgrading. An older binary requires restoring the pre-upgrade backup; do not point v0.3.0 at the upgraded database.
+
 Version 0.3.0 migrates SQLite to schema 7 and PostgreSQL to application migration 3. It adds native Bedrock, member allowances, invitation onboarding and notifications. Existing providers retain conservative input estimates until an owner chooses vLLM counting. Maintenance accepts schema 3–7 snapshots without migrating their source; normal startup upgrades a restored copy. Version 0.2.2 cannot open these newer schemas. For rollback, restore the pre-upgrade database and matching encryption key into a new location and run the corresponding older release.
 
 Account provisioning changes in 0.3.0: `POST /api/admin/users` returns 410. Owners create invitations in Team or through `/api/admin/invitations`; recipients choose their own passwords. Set `PUBLIC_BASE_URL` to the reachable origin, configure HTTPS/secure cookies for shared deployments, and optionally configure notification delivery. Existing accounts remain valid. See [invitations and notifications](NOTIFICATIONS.md).

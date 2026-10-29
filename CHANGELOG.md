@@ -4,6 +4,10 @@ This project uses Semantic Versioning. Dates use YYYY-MM-DD.
 
 ## [Unreleased]
 
+- Add the Admin role for all operational management: providers, deployments, policies, keys, team invitations and allowance/deployment approvals. Reserve Admin assignment and workspace/notification settings for Owners.
+- Add Admin invitations and an Owner-only Change role flow, with session and personal-key revocation, pending notification/invitation cancellation and audit records. Deny model use by Viewer-owned keys. Notify Admins of allowance requests and budget alerts.
+- Add SQLite schema 8 and PostgreSQL application migration 4, preserving existing users and invitations. Back up before upgrading; older binaries require restoring the pre-upgrade database.
+
 ## [0.3.0] - 2026-10-29
 
 - **Account provisioning change:** `POST /api/admin/users` now returns 410. Use owner-created invitations; existing accounts remain valid. Back up before upgrading to SQLite schema 7 or PostgreSQL migration 3; older binaries require a restored pre-upgrade backup.

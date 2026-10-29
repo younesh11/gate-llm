@@ -1,3 +1,4 @@
+import { isOperator, requireOwner, requireManagePerson } from './roles.ts';
 import { Notifications, registerNotifications, publicBaseUrl } from './notifications.ts';
 import { awsNotificationTransport, type NotificationTransport } from './notification-transport.ts';
 import { PostgresAppStore } from './postgres/app-store.ts';
@@ -27,7 +28,7 @@ const providerSchema = z.object({ name, provider_type: z.enum(['openai', 'bedroc
 const deploymentSchema = z.object({ provider_id: z.string(), alias: z.string().regex(/^[a-zA-Z0-9._/-]{1,100}$/), upstream_model: z.string().min(1).max(200), weight: z.number().int().min(1).max(1000), input_price: z.number().finite().min(0).max(1000), output_price: z.number().finite().min(0).max(1000), enabled: z.boolean().default(true) });
 const policySchema = z.object({ name, blocked_terms: z.array(z.string().trim().min(1).max(100)).max(100), redact_pii: z.boolean(), block_secrets: z.boolean(), pii_types: z.array(z.enum(piiTypes)).max(4).default(defaultPiiTypes), term_match: z.enum(['substring', 'word']).default('substring') });
 const keySchema = z.object({ name, owner: name, models: z.array(z.string().min(1).max(100)).min(1).max(100), policy_id: z.string().nullable().default(null), budget: z.number().finite().min(0.01).max(100000).nullable(), rpm: z.number().int().min(1).max(10000), max_request_tokens: z.number().int().min(1).max(1000000), expires_at: z.string().datetime().nullable().default(null), token_limit: z.number().int().min(0).max(1e12).nullable().optional(), tpm: z.number().int().min(1).max(1e9).nullable().optional(), limit_period: z.enum(['lifetime', 'daily', 'monthly']).optional(), user_id: z.string().nullable().optional() });
-const memberSchema = z.object({ name, email: z.string().trim().email().max(150).transform(v => v.toLowerCase()), password: z.string().min(12).max(200), role: z.enum(['owner', 'member', 'viewer']) });
+const memberSchema = z.object({ name, email: z.string().trim().email().max(150).transform(v => v.toLowerCase()), password: z.string().min(12).max(200), role: z.enum(['owner', 'admin', 'member', 'viewer']) });
 
 export function createApp(options: Options & { postgres: PostgresOptions }): Promise<{ app: Awaited<ReturnType<typeof createAppInternal>>['app']; notifications: Notifications; db: PostgresAppStore }>;
 export function createApp(options: Options & { postgres?: undefined }): Promise<{ app: Awaited<ReturnType<typeof createAppInternal>>['app']; notifications: Notifications; db: Store }>;
@@ -72,7 +73,7 @@ async function createAppInternal(options: Options) {
         if (route.startsWith('/api/member/')) (await sessionUser(request));
         if (route.startsWith('/api/admin/')) {
           const user = (await sessionUser(request));
-          if (request.method !== 'GET' && user.role !== 'owner') throw new HttpError(403, 'Only workspace owners can make this change.');
+          if (request.method !== 'GET' && !isOperator(user)) throw new HttpError(403, 'Only owners and admins can make this change.');
         }
       }
     });
@@ -135,7 +136,7 @@ async function createAppInternal(options: Options) {
     });
     app.get('/api/admin/state', async request => {
       const user = (await sessionUser(request)), w = user.workspace_id;
-      if (user.role !== 'owner') return (await memberState(db, user));
+      if (!isOperator(user)) return (await memberState(db, user));
       const providers = (await db.all('SELECT id, name, base_url, enabled, created_at, token_counting, provider_type, aws_region, (length(secret)>0) AS has_key FROM providers WHERE workspace_id=? ORDER BY created_at DESC', w));
       const deployments = (await db.all('SELECT d.*, p.name AS provider_name FROM deployments d JOIN providers p ON p.id=d.provider_id WHERE d.workspace_id=? ORDER BY d.alias, d.created_at', w));
       const keys = (await mapRows((await db.all('SELECT id,name,owner,prefix,models,policy_id,budget,spent,reserved,rpm,max_request_tokens,expires_at,revoked,created_at,token_limit,tpm,limit_period,user_id FROM virtual_keys WHERE workspace_id=? ORDER BY created_at DESC', w)), async key => ({ ...key, models: JSON.parse(key.models), ...(await db.limitSummary(key)) })));
@@ -162,9 +163,9 @@ async function createAppInternal(options: Options) {
         COALESCE(SUM(d.output_tokens),0) AS output_tokens,COALESCE(SUM(d.cost),0) AS cost
         FROM virtual_keys k LEFT JOIN users u ON u.id=k.user_id AND u.workspace_id=k.workspace_id
         LEFT JOIN usage_daily d ON d.key_id=k.id AND d.day>=? AND d.day<=?
-        WHERE k.workspace_id=? AND (?='owner' OR EXISTS (SELECT 1 FROM member_keys m WHERE m.key_id=k.id AND m.user_id=?)) GROUP BY k.id,u.id ORDER BY tokens DESC,k.name`, since, today, user.workspace_id, user.role, user.id));
+        WHERE k.workspace_id=? AND (? IN ('owner','admin') OR EXISTS (SELECT 1 FROM member_keys m WHERE m.key_id=k.id AND m.user_id=?)) GROUP BY k.id,u.id ORDER BY tokens DESC,k.name`, since, today, user.workspace_id, user.role, user.id));
       const daily = (await db.all(`SELECT d.* FROM usage_daily d JOIN virtual_keys k ON k.id=d.key_id
-        WHERE k.workspace_id=? AND d.day>=? AND d.day<=? AND (?='owner' OR EXISTS (SELECT 1 FROM member_keys m WHERE m.key_id=k.id AND m.user_id=?)) ORDER BY d.day`, user.workspace_id, trendStart, today, user.role, user.id));
+        WHERE k.workspace_id=? AND d.day>=? AND d.day<=? AND (? IN ('owner','admin') OR EXISTS (SELECT 1 FROM member_keys m WHERE m.key_id=k.id AND m.user_id=?)) ORDER BY d.day`, user.workspace_id, trendStart, today, user.role, user.id));
       return { period, since: since || null, trend_start: trendStart, through: today, by_key: byKey, daily };
     });
     const record = async (table: string, request: any) => {
@@ -272,12 +273,14 @@ async function createAppInternal(options: Options) {
     app.post('/api/admin/users', async () => { throw new HttpError(410, 'Use Team invitations so each person sets their own password.', 'invitation_required'); });
     app.delete('/api/admin/users/:id', async request => {
       const { user, row } = (await record('users', request));
+      requireManagePerson(user, row);
       if (row.id === user.id) throw new HttpError(400, 'You cannot remove your own account.');
-      (await db.transaction(async () => { (await db.run('UPDATE virtual_keys SET revoked=1 WHERE user_id=?', row.id)); (await db.run("UPDATE allowance_requests SET status='rejected',decision_note='Member removed',resolved_at=? WHERE user_id=? AND status='pending'", now(), row.id)); (await db.run("UPDATE deployment_requests SET status='rejected' WHERE user_id=? AND status='pending'", row.id)); (await db.run('DELETE FROM sessions WHERE user_id=?', row.id)); (await db.run('DELETE FROM users WHERE id=?', row.id)); (await db.audit(user.workspace_id, user.email, 'member.removed', row.email)); }));
+      (await db.transaction(async () => { requireManagePerson(await sessionUser(request), (await db.get('SELECT role FROM users WHERE id=?', row.id))!); (await db.run('UPDATE virtual_keys SET revoked=1 WHERE user_id=?', row.id)); (await db.run("UPDATE allowance_requests SET status='rejected',decision_note='Member removed',resolved_at=? WHERE user_id=? AND status='pending'", now(), row.id)); (await db.run("UPDATE deployment_requests SET status='rejected' WHERE user_id=? AND status='pending'", row.id)); (await db.run('DELETE FROM sessions WHERE user_id=?', row.id)); (await db.run('DELETE FROM users WHERE id=?', row.id)); (await db.audit(user.workspace_id, user.email, 'member.removed', row.email)); }));
       return { ok: true };
     });
     app.put('/api/admin/workspace', async request => {
       const user = (await sessionUser(request)), input = z.object({ name }).parse(request.body);
+      requireOwner(user);
       (await db.run('UPDATE workspaces SET name=? WHERE id=?', input.name, user.workspace_id));
       (await db.audit(user.workspace_id, user.email, 'workspace.updated', input.name)); return { ok: true };
     });

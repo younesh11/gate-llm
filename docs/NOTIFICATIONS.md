@@ -5,14 +5,14 @@ GATE includes invite-only onboarding, a private notification inbox and a durable
 ## Team onboarding
 
 1. Configure `PUBLIC_BASE_URL` to the exact origin recipients will visit. Example local setting: `http://localhost:4310`; shared installations require HTTPS, such as `https://gateway.example.com` or `https://YOUR_IP:8443` with a trusted IP certificate.
-2. Sign in as owner and open **Team → Invite person**. Enter name/email, choose member or viewer, and optionally assign model aliases and a required guardrail policy.
+2. Sign in as Owner or Admin and open **Team → Invite person**. Enter name/email, choose Member or Viewer, and optionally assign model aliases and a required guardrail policy. Owners can also choose Admin, granting full operational management on acceptance.
 3. Copy the private link once, or select **Send invitation by email** if SES is configured.
 4. The recipient opens the link, sets and confirms their own password, then signs in normally.
-5. Members request an allowance; owners approve it in Team. No budget, deployment permissions or API key are issued automatically.
+5. Members request an allowance; Owners or Admins approve it in Team. Members receive no budget, deployment permissions or API key automatically.
 
 The former `POST /api/admin/users` password-creation route now returns HTTP 410 (`invitation_required`). Existing accounts and sessions are preserved. Invitations cannot grant owner status or replace an existing account. This is an intentional API behavior change for clients that previously provisioned accounts with an initial password.
 
-Links expire after 24 hours and are single-use. Regenerating invalidates the old link; revocation and acceptance cancel pending delivery jobs. A request already handed to an email service cannot be recalled, but revoked links remain unusable. Deleted/suspended issuers, expired links, missing grants, and existing accounts prevent acceptance. Inspection and email link previews do not consume invitations.
+Links expire after 24 hours and are single-use. Regenerating invalidates the old link; revocation and acceptance cancel pending delivery jobs. A request already handed to an email service cannot be recalled, but revoked links remain unusable. Deleted/suspended issuers, issuers without the required role, expired links, missing grants, and existing accounts prevent acceptance. Inspection and email link previews do not consume invitations.
 
 Tokens have 256 random bits; only their hash is stored in the invitation record. For automatic email delivery, the pending message temporarily contains an **encrypted** link using the gateway encryption key. That encrypted payload is deleted after acceptance by the provider, terminal failure, or cancellation. Backups may retain historical encrypted payloads; protect backups and encryption keys together. A failed invitation should be regenerated to retry delivery.
 
@@ -35,7 +35,7 @@ These settings are passed through both Compose configurations. Change `PUBLIC_BA
 
 AWS credentials come from the standard server identity chain (prefer the EC2 IAM role). No notification API credentials are exposed in the dashboard. SES requires a verified sender identity and appropriate `ses:SendEmail` permissions; SES sandbox accounts also restrict recipients. SNS requires `sns:Publish` permission for the configured standard topic in the selected region. Consult [SES SendEmail](https://docs.aws.amazon.com/ses/latest/APIReference-V2/API_SendEmail.html) and [SNS Publish](https://docs.aws.amazon.com/sns/latest/api/API_Publish.html). SES API delivery is implemented; SMTP is not included in this increment.
 
-Leave email and SNS configuration empty for in-app-only operation. Configure server channels first, then enable budget email/SNS in **Settings → Notifications**. Configuring SES alone does not automatically send invitation email; owners choose that action for each invitation.
+Leave email and SNS configuration empty for in-app-only operation. Configure server channels first, then enable budget email/SNS in **Settings → Notifications**. Configuring SES alone does not automatically send invitation email; Owners or Admins choose that action for each invitation.
 
 Reverse proxies must strip untrusted forwarded headers and set their own. Set `COOKIE_SECURE=true` for HTTPS; cookie hosts are not isolated by port, so use a distinct hostname for production services and avoid hosting untrusted apps on the same host. Keep first-owner bootstrap private; existing Compose remote-setup behavior is not a substitute for a deployment bootstrap policy.
 
@@ -43,8 +43,8 @@ Reverse proxies must strip untrusted forwarded headers and set their own. Set `C
 
 - Default thresholds: 70%, 90%, 100%; owners can configure up to five percentages.
 - Monitor currency budgets and combined input/output token caps for individual keys and shared member allowances.
-- Notify workspace owners, optionally the affected member / assigned key owner, and optionally the administrator SNS topic.
-- Allowance requests notify owners; approval/rejection notifies the requesting member. These inbox updates work even when budget threshold notifications are disabled.
+- Notify workspace Owners and Admins, optionally the affected member / assigned key owner, and optionally the administrator SNS topic.
+- Allowance requests notify Owners and Admins; approval/rejection notifies the requesting member. These inbox updates work even when budget threshold notifications are disabled.
 - Mark individual messages or the whole personal inbox as read. Members cannot access another user's notifications or delivery history.
 - Delivery history is owner-only. **Accepted** means the transport acknowledged the message, not that the recipient received/read it. Bounce/complaint webhooks and inbox-delivery confirmation are not implemented.
 

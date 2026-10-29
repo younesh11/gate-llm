@@ -14,7 +14,7 @@ An independent, self-hosted LLM gateway. One endpoint for your models, a dashboa
 - **Proxy and routing:** OpenAI-compatible chat completions, JSON/SSE streaming, weighted load balancing, cooldowns and fallback on explicit HTTP 429 responses.
 - **Input guardrails:** reusable per-key policies, a local policy tester, normalized blocked terms, selected secret detection and configurable pattern-based PII redaction.
 - **Playground and analytics:** streaming chat, token and spend breakdowns by key/member/application, request history and audit records.
-- **Team access:** owner/member/viewer roles, invite-only password setup, assigned models, shared allowances, hashed virtual keys and encrypted provider credentials.
+- **Team access:** owner/admin/member/viewer roles, invite-only password setup, assigned models, shared allowances, hashed virtual keys and encrypted provider credentials.
 - **Notifications:** private inboxes, budget/token thresholds, allowance decisions and durable optional SES email/SNS delivery.
 - **Recovery:** verified offline backups, restores into new directories, and local password reset with session invalidation.
 

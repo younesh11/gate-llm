@@ -1,3 +1,4 @@
+import { requireOperator, requireOwner, requireManagePerson } from './roles.ts';
 import type { Notifications } from './notifications.ts';
 import { AppStore, mapRows } from './storage.ts';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
@@ -12,6 +13,7 @@ export async function keyMember(db: AppStore, key: Row, model?: string) {
   if (!key.user_id) return;
   const user = (await db.get('SELECT * FROM users WHERE id=? AND workspace_id=?', key.user_id, key.workspace_id));
   if (!user) throw new HttpError(403, 'The key owner is unavailable.', 'member_unavailable');
+  if (!['owner','admin','member'].includes(user.role)) throw new HttpError(403, 'This account does not have permission to use models.', 'member_role_forbidden');
   const access = (await accessFor(db, user.id));
   if (access.suspended) throw new HttpError(403, 'The key owner is suspended.', 'member_suspended');
   if (user.role === 'member' && model && !access.models.includes(model)) throw new HttpError(403, 'Your owner has not assigned this model to you.', 'model_not_assigned');
@@ -45,24 +47,44 @@ export function registerMembers(app: FastifyInstance, db: AppStore, sessionUser:
   const member = async (request: FastifyRequest) => { const user = (await sessionUser(request)); if (user.role !== 'member') throw new HttpError(403, 'This action is for workspace members.'); return user; };
   const target = async (request: FastifyRequest) => { const actor = (await sessionUser(request)); const user = (await db.get('SELECT id,name,email,role FROM users WHERE id=? AND workspace_id=?', (request.params as any).id, actor.workspace_id)); if (!user) throw new HttpError(404, 'Member not found.'); return { actor, user }; };
   app.get('/api/admin/team', async request => {
-    const actor = (await sessionUser(request)); if (actor.role !== 'owner') throw new HttpError(403, 'Only owners can manage the team.');
+    const actor = (await sessionUser(request)); requireOperator(actor);
     return { users: (await mapRows((await db.all('SELECT id,name,email,role,created_at FROM users WHERE workspace_id=?', actor.workspace_id)), async user => ({ ...user, access: (await accessFor(db,user.id)), allowance: (await db.memberSummary(user.id)) }))),
       requests: (await db.all('SELECT r.*,u.name AS user_name FROM allowance_requests r LEFT JOIN users u ON u.id=r.user_id WHERE r.workspace_id=? ORDER BY r.created_at DESC LIMIT 200', actor.workspace_id)),
       deployments: (await db.all('SELECT r.*,u.name AS user_name,p.name AS provider_name FROM deployment_requests r LEFT JOIN users u ON u.id=r.user_id LEFT JOIN providers p ON p.id=r.provider_id WHERE r.workspace_id=? ORDER BY r.created_at DESC LIMIT 200', actor.workspace_id)) };
   });
   app.put('/api/admin/users/:id/access', async request => {
     const { actor,user } = (await target(request));
-    if (user.role === 'owner') throw new HttpError(400, 'Owner access cannot be restricted here.');
+    requireManagePerson(actor, user);
     const input = z.object({ models: z.array(z.string()).max(100), provider_ids: z.array(z.string()).max(100), policy_id: z.string().nullable(), suspended: z.boolean() }).strict().parse(request.body);
     const aliases = (await db.all('SELECT DISTINCT alias FROM deployments WHERE workspace_id=?', actor.workspace_id)).map(row=>row.alias);
     if (input.models.some(model=>!aliases.includes(model))) throw new HttpError(400, 'Choose models in this workspace.');
     const providers = (await db.all('SELECT id FROM providers WHERE workspace_id=?',actor.workspace_id)).map(row=>row.id);
     if (input.provider_ids.some(provider=>!providers.includes(provider))) throw new HttpError(400,'Choose providers in this workspace.');
     if (input.policy_id && !(await db.get('SELECT id FROM policies WHERE id=? AND workspace_id=?', input.policy_id,actor.workspace_id))) throw new HttpError(400,'Choose a policy in this workspace.');
-    (await db.transaction(async ()=>{ (await db.run('INSERT INTO member_access VALUES (?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET models=excluded.models,provider_ids=excluded.provider_ids,policy_id=excluded.policy_id,suspended=excluded.suspended',user.id,JSON.stringify([...new Set(input.models)]),JSON.stringify([...new Set(input.provider_ids)]),input.policy_id,Number(input.suspended)));
+    (await db.transaction(async ()=>{ requireManagePerson(await sessionUser(request), (await db.get('SELECT role FROM users WHERE id=?',user.id))!); (await db.run('INSERT INTO member_access VALUES (?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET models=excluded.models,provider_ids=excluded.provider_ids,policy_id=excluded.policy_id,suspended=excluded.suspended',user.id,JSON.stringify([...new Set(input.models)]),JSON.stringify([...new Set(input.provider_ids)]),input.policy_id,Number(input.suspended)));
       if(input.suspended) (await db.run('DELETE FROM sessions WHERE user_id=?',user.id));
       (await db.audit(actor.workspace_id,actor.email,'member.access_updated',user.email));
     })); return {ok:true};
+  });
+  app.put('/api/admin/users/:id/role', async request => {
+    const input = z.object({ role: z.enum(['admin','member','viewer']) }).strict().parse(request.body);
+    return db.transaction(async () => {
+      const { actor, user } = await target(request);
+      requireOwner(actor); requireManagePerson(actor, user);
+      if (user.role === input.role) return { ok: true };
+      await db.run('UPDATE users SET role=? WHERE id=?', input.role, user.id);
+      await db.run('DELETE FROM sessions WHERE user_id=?', user.id);
+      // Personal keys must never acquire broader privileges on promotion or survive demotion.
+      // Workspace application keys remain operational resources, independent of their creator.
+      await db.run('UPDATE virtual_keys SET revoked=1 WHERE user_id=? OR id IN (SELECT key_id FROM member_keys WHERE user_id=?)',user.id,user.id);
+      await db.run("UPDATE notification_deliveries SET status='cancelled',payload='',claim=NULL WHERE user_id=? AND status IN ('pending','sending')",user.id);
+      await db.run("UPDATE invitations SET status='revoked' WHERE issuer_id=? AND status='pending'",user.id);
+      await db.run("UPDATE notification_deliveries SET status='cancelled',payload='',claim=NULL WHERE invitation_id IN (SELECT id FROM invitations WHERE issuer_id=?) AND status IN ('pending','sending')",user.id);
+      await db.run("UPDATE allowance_requests SET status='rejected',decision_note='Role changed',resolved_at=? WHERE user_id=? AND status='pending'",now(),user.id);
+      await db.run("UPDATE deployment_requests SET status='rejected' WHERE user_id=? AND status='pending'",user.id);
+      await db.audit(actor.workspace_id,actor.email,'member.role_updated',`${user.email}: ${user.role} → ${input.role}`);
+      return { ok: true };
+    });
   });
   app.post('/api/member/allowance-requests', async request => {
     const user = (await member(request)), input = cap.extend({ reason: z.string().trim().min(1).max(500) }).strict().parse(request.body); validateCap(input);

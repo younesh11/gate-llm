@@ -320,9 +320,11 @@ test('gateway integration and security boundaries', async t => {
     db.recordUsage(foreign.id, now(), 100, 200, 50, 150);
     const report = await admin('usage?period=all');
     assert.ok(!report.body.includes(foreign.id)); assert.ok(!report.body.includes('Foreign usage marker'));
-    db.run('INSERT INTO users VALUES (?,?,?,?,?,?,?)',id(),'default','Removable','removable@example.test',passwordHash('removable-password'),'viewer',now());
+    db.run('INSERT INTO users VALUES (?,?,?,?,?,?,?)',id(),'default','Removable','removable@example.test',passwordHash('removable-password'),'member',now());
     const local = db.get('SELECT id FROM users WHERE email=?', 'removable@example.test')!;
-    const k = await makeKey({ user_id: local.id }); await chat(k.token);
+    db.run('INSERT INTO member_access VALUES (?,?,?,?,?)',local.id,'["chat"]','[]',null,0);
+    db.run('INSERT INTO member_allowances VALUES (?,?,?,?,?)',local.id,10000000,10000,'lifetime',null);
+    const k = await makeKey({ user_id: local.id }); assert.equal((await chat(k.token)).statusCode,200);
     assert.equal((await admin(`users/${local.id}`, undefined, 'DELETE')).statusCode, 200);
     const retained = (await admin('usage?period=all')).json().by_key.find((row: any) => row.id === k.id);
     assert.equal(retained.user_id, null); assert.equal(retained.tokens, 160);

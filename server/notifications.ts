@@ -1,3 +1,4 @@
+import { requireOperator } from './roles.ts';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { randomBytes, scrypt } from 'node:crypto';
 import { z } from 'zod';
@@ -13,7 +14,7 @@ export function publicBaseUrl(value?: string) {
   return url.origin;
 }
 const tokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
-const inviteInput = z.object({ name: z.string().trim().min(1).max(80), email: z.string().trim().email().max(150).transform(v=>v.toLowerCase()), role: z.enum(['member','viewer']).default('member'), models: z.array(z.string().min(1).max(100)).max(100).default([]), policy_id: z.string().nullable().default(null), send_email: z.boolean().default(false) }).strict();
+const inviteInput = z.object({ name: z.string().trim().min(1).max(80), email: z.string().trim().email().max(150).transform(v=>v.toLowerCase()), role: z.enum(['admin','member','viewer']).default('member'), models: z.array(z.string().min(1).max(100)).max(100).default([]), policy_id: z.string().nullable().default(null), send_email: z.boolean().default(false) }).strict();
 const unavailable = () => new HttpError(400, 'This invitation is unavailable. Ask your owner for a new link.', 'invitation_unavailable');
 export class Notifications {
   private timer?: ReturnType<typeof setInterval>;
@@ -33,7 +34,7 @@ export class Notifications {
   }
   async allowance(workspace: string, requestId: string, userId: string, decision?: string) {
     const settings = await this.settings(workspace);
-    const users = decision ? await this.db.all('SELECT id,email FROM users WHERE id=? AND workspace_id=?',userId,workspace) : await this.db.all("SELECT id,email FROM users WHERE workspace_id=? AND role='owner'",workspace);
+    const users = decision ? await this.db.all('SELECT id,email FROM users WHERE id=? AND workspace_id=?',userId,workspace) : await this.db.all("SELECT id,email FROM users WHERE workspace_id=? AND role IN ('owner','admin')",workspace);
     await this.notify(workspace,users,`allowance:${requestId}:${decision??'requested'}`,decision ? `Allowance ${decision}` : 'Allowance request to review',decision ? `Your allowance request was ${decision}. Open My access to review the decision and your current limits.` : 'A team member requested an allowance. Open Team to review the request.',settings.email);
   }
   async evaluateAlerts() {
@@ -49,7 +50,7 @@ export class Notifications {
             const end = period==='daily'?new Date(Date.parse(day)+86400000).toISOString().slice(0,10):period==='monthly'?new Date(Date.UTC(Number(day.slice(0,4)),Number(day.slice(5,7)),1)).toISOString().slice(0,10):'9999';
             const usage = (await this.db.get(`SELECT COALESCE(SUM(cost),0) AS cost,COALESCE(SUM(tokens),0) AS tokens FROM ${key?'usage_daily':'member_usage'} WHERE ${key?'key_id':'user_id'}=? AND day>=? AND day<?`,pending.subject_id,start,end))!;
             const affected = key ? subject.user_id : pending.subject_id;
-            const recipients = await this.db.all("SELECT id,email FROM users WHERE workspace_id=? AND ((?=1 AND role='owner') OR (?=1 AND id=?))",subject.workspace_id,Number(settings.owners),Number(settings.affected_user),affected??'');
+            const recipients = await this.db.all("SELECT id,email FROM users WHERE workspace_id=? AND ((?=1 AND role IN ('owner','admin')) OR (?=1 AND id=?))",subject.workspace_id,Number(settings.owners),Number(settings.affected_user),affected??'');
             for (const metric of ['budget','token_limit'] as const) {
               const limit=subject[metric],used=metric==='budget'?usage.cost:usage.tokens;
               if (limit === null || limit === undefined || limit <= 0) continue;
@@ -70,7 +71,7 @@ export class Notifications {
     }
   }
   private async validInvite(row: Row, tokenHash?: string) {
-    return row.status==='pending' && row.expires_at>Date.now() && (!tokenHash || row.token_hash===tokenHash) && !!await this.db.get("SELECT u.id FROM users u LEFT JOIN member_access a ON a.user_id=u.id WHERE u.id=? AND u.workspace_id=? AND u.role='owner' AND COALESCE(a.suspended,0)=0",row.issuer_id,row.workspace_id);
+    return row.status==='pending' && row.expires_at>Date.now() && (!tokenHash || row.token_hash===tokenHash) && !!await this.db.get("SELECT u.id FROM users u LEFT JOIN member_access a ON a.user_id=u.id WHERE u.id=? AND u.workspace_id=? AND (u.role='owner' OR (u.role='admin' AND ? IN ('member','viewer'))) AND COALESCE(a.suspended,0)=0",row.issuer_id,row.workspace_id,row.role);
   }
   async deliverOne() {
     const claim=id();
@@ -122,7 +123,9 @@ export class Notifications {
 
 export function registerNotifications(app:FastifyInstance, service:Notifications, sessionUser:(r:FastifyRequest)=>Promise<Row>, worker=true) {
   const db=service.db;
-  const owner=async(request:FastifyRequest)=>{const user=await sessionUser(request);if(user.role!=='owner')throw new HttpError(403,'Only owners can manage invitations and notification settings.');return user;};
+  const owner=async(request:FastifyRequest)=>{const user=await sessionUser(request);if(user.role!=='owner')throw new HttpError(403,'Only owners can manage notification settings.');return user;};
+  const operator=async(request:FastifyRequest)=>{const user=await sessionUser(request);requireOperator(user);return user;};
+  const canInvite=(user:Row,role:string)=>{if(role==='admin'&&user.role!=='owner')throw new HttpError(403,'Only owners can invite or manage admins.');};
   const buckets=new Map<string,{n:number;until:number}>();
   function limit(key:string,max:number) {const time=Date.now();for(const [k,v] of buckets)if(v.until<=time)buckets.delete(k);const v=buckets.get(key)??{n:0,until:time+60000};if(v.n>=max||buckets.size>10000)throw new HttpError(429,'Too many attempts. Try again shortly.');v.n++;buckets.set(key,v);}
   const throttle=(r:FastifyRequest)=>{limit('global',120);limit('ip:'+r.ip,30);};
@@ -136,14 +139,19 @@ export function registerNotifications(app:FastifyInstance, service:Notifications
   app.post('/api/member/notifications/:id/read',async request=>{const user=await sessionUser(request);await db.run('UPDATE notifications SET read_at=? WHERE id=? AND user_id=? AND workspace_id=?',now(),(request.params as any).id,user.id,user.workspace_id);return {ok:true};});
   app.get('/api/admin/notifications',async request=>{const user=await owner(request);return {settings:await service.settings(user.workspace_id),email_available:service.transport.email,sns_available:service.transport.sns,public_base_url:service.baseUrl??null,deliveries:await db.all('SELECT id,channel,title,status,attempts,error_code,created_at FROM notification_deliveries WHERE workspace_id=? ORDER BY created_at DESC LIMIT 100',user.workspace_id)};});
   app.put('/api/admin/notifications',async request=>{const user=await owner(request),input=notificationSettings.parse(request.body);if(input.email&&!service.transport.email||input.sns&&!service.transport.sns)throw new HttpError(400,'Configure the selected delivery channel on the server first.');if(input.enabled&&!input.owners&&!input.affected_user&&!input.sns)throw new HttpError(400,'Choose at least one alert recipient.');await db.transaction(async()=>{await db.run('INSERT INTO notification_settings VALUES (?,?) ON CONFLICT(workspace_id) DO UPDATE SET settings=excluded.settings',user.workspace_id,JSON.stringify({...input,thresholds:[...new Set(input.thresholds)].sort((a,b)=>a-b)}));await db.audit(user.workspace_id,user.email,'notifications.updated',user.workspace_id);});return {ok:true};});
-  app.get('/api/admin/invitations',async request=>{const user=await owner(request);return {email_available:service.transport.email,public_base_url:service.baseUrl??null,items:(await db.all('SELECT id,name,email,role,status,expires_at,created_at FROM invitations WHERE workspace_id=? ORDER BY created_at DESC LIMIT 100',user.workspace_id)).map(row=>({...row,status:row.status==='pending'&&row.expires_at<=Date.now()?'expired':row.status}))};});
+  app.get('/api/admin/invitations',async request=>{const user=await operator(request);return {email_available:service.transport.email,public_base_url:service.baseUrl??null,items:(await db.all("SELECT id,name,email,role,status,expires_at,created_at FROM invitations WHERE workspace_id=? AND (?='owner' OR role<>'admin') ORDER BY created_at DESC LIMIT 100",user.workspace_id,user.role)).map(row=>({...row,status:row.status==='pending'&&row.expires_at<=Date.now()?'expired':row.status}))};});
   async function issue(request:FastifyRequest, rotate=false) {
-    const user=await owner(request);limit('owner:'+user.id,20);
+    const user=await operator(request);limit('operator:'+user.id,20);
     if(!service.baseUrl)throw new HttpError(400,'Set PUBLIC_BASE_URL on the server before creating invitations.');
+    // Validate before the transaction so both databases return validation errors consistently.
+    const parsedInput=rotate?undefined:inviteInput.parse(request.body);
+    const delivery=rotate?z.object({send_email:z.boolean().default(false)}).strict().parse(request.body):undefined;
     return db.transaction(async()=>{
       let input:z.infer<typeof inviteInput>,previous:Row|undefined;
-      if(rotate){const {send_email}=z.object({send_email:z.boolean().default(false)}).strict().parse(request.body);previous=await db.get('SELECT * FROM invitations WHERE id=? AND workspace_id=?',(request.params as any).id,user.workspace_id);if(!previous||previous.status==='accepted')throw new HttpError(400,'This invitation cannot be regenerated.');input={name:previous.name,email:previous.email,role:previous.role,models:JSON.parse(previous.models),policy_id:previous.policy_id,send_email};}
-      else input=inviteInput.parse(request.body);
+      if(rotate){const {send_email}=delivery!;previous=await db.get('SELECT * FROM invitations WHERE id=? AND workspace_id=?',(request.params as any).id,user.workspace_id);if(!previous||previous.status==='accepted')throw new HttpError(400,'This invitation cannot be regenerated.');input={name:previous.name,email:previous.email,role:previous.role,models:JSON.parse(previous.models),policy_id:previous.policy_id,send_email};}
+      else input=parsedInput!;
+      canInvite(await operator(request),input.role);
+      if(input.role==='admin'){input.models=[];input.policy_id=null;}
       if(input.send_email&&!service.transport.email)throw new HttpError(400,'Configure email delivery first, or copy the invitation link.');
       if(await db.get('SELECT id FROM users WHERE email=?',input.email))throw new HttpError(409,'This email already has an account. Manage its existing access.');
       await grants(user.workspace_id,input.models,input.policy_id);
@@ -160,7 +168,7 @@ export function registerNotifications(app:FastifyInstance, service:Notifications
   }
   app.post('/api/admin/invitations',request=>issue(request));
   app.post('/api/admin/invitations/:id/regenerate',request=>issue(request,true));
-  app.post('/api/admin/invitations/:id/revoke',async request=>{const user=await owner(request);await db.transaction(async()=>{const row=await db.get('SELECT * FROM invitations WHERE id=? AND workspace_id=?',(request.params as any).id,user.workspace_id);if(!row||row.status==='accepted')throw new HttpError(400,'This invitation cannot be revoked.');await db.run("UPDATE invitations SET status='revoked' WHERE id=?",row.id);await db.run("UPDATE notification_deliveries SET status='cancelled',payload='',claim=NULL WHERE invitation_id=? AND status IN ('pending','sending')",row.id);await db.audit(user.workspace_id,user.email,'invitation.revoked',row.email);});return {ok:true};});
+  app.post('/api/admin/invitations/:id/revoke',async request=>{const user=await operator(request);await db.transaction(async()=>{const row=await db.get('SELECT * FROM invitations WHERE id=? AND workspace_id=?',(request.params as any).id,user.workspace_id);if(!row||row.status==='accepted')throw new HttpError(400,'This invitation cannot be revoked.');canInvite(await operator(request),row.role);await db.run("UPDATE invitations SET status='revoked' WHERE id=?",row.id);await db.run("UPDATE notification_deliveries SET status='cancelled',payload='',claim=NULL WHERE invitation_id=? AND status IN ('pending','sending')",row.id);await db.audit(user.workspace_id,user.email,'invitation.revoked',row.email);});return {ok:true};});
   app.post('/api/invitations/inspect',async request=>{throttle(request);const {token}=z.object({token:tokenSchema}).strict().parse(request.body);const row=await service.inspect(token);const workspace=await db.get('SELECT name FROM workspaces WHERE id=?',row.workspace_id);return {name:row.name,email:row.email,workspace:workspace!.name,expires_at:row.expires_at};});
   app.post('/api/invitations/accept',async request=>{
     throttle(request);
